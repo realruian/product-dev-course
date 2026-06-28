@@ -1,0 +1,1470 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>产品开发全流程</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --bg: #ffffff;
+  --bg-soft: #f7f7f8;
+  --border: #e6e6e6;
+  --grid: rgba(17,17,17,0.035);
+  --text: #111111;
+  --text-secondary: #6b7280;
+  --text-meta: #b3b3b3;
+  --text-faint: #f0f0f2;
+  --accent: #00e75e;
+  --warn: #d93025;
+  /* 侧边栏宽 = 4 个网格单元（64×4），右边框正好落在画布网格线上 */
+  --sidebar-w: 256px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  font-family: 'Inter', 'Noto Sans SC', 'PingFang SC', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  color: var(--text);
+}
+
+/* ===== 固定舞台：1920×1080 等比缩放 ===== */
+.stage {
+  position: fixed;
+  top: 50%; left: 50%;
+  width: 1920px; height: 1080px;
+  transform: translate(-50%, -50%) scale(var(--scale, 1));
+  transform-origin: center center;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+/* 画布网格：64px 细网格线 */
+.stage::before {
+  content: '';
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
+  background-size: 64px 64px;
+  z-index: 0;
+}
+/* 网格交点十字标记 */
+.stage::after {
+  content: '';
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='256' height='256'%3E%3Cpath d='M128 121v14M121 128h14' stroke='%23111111' stroke-opacity='0.14' stroke-width='1'/%3E%3C/svg%3E");
+  background-size: 256px 256px;
+  z-index: 0;
+}
+
+/* 右缘斜纹装饰条（左缘被侧边栏占据） */
+.frame.right {
+  position: absolute; top: 0; bottom: 0; right: 0;
+  width: 18px;
+  background: repeating-linear-gradient(45deg, rgba(17,17,17,0.05) 0 1px, transparent 1px 7px);
+  border-left: 1px solid var(--border);
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* ===== 左侧侧边栏：logo + 目录树 =====
+   完全无线（用户裁定）：无横向分割线、无右侧竖边框；白底静默覆盖网格，分区只靠留白 */
+.sidebar {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: var(--sidebar-w);
+  background: var(--bg);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+}
+/* logo 区：高 128px（logo 中心与右侧页眉行同高），无下边线 */
+.sidebar .brand {
+  height: 128px;
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  flex-shrink: 0;
+}
+.sidebar .brand svg { display: block; height: 42px; width: auto; }
+
+.toc {
+  flex: 1;
+  padding: 6px 12px 18px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;          /* 修订 w：目录列满每页时可滚动 */
+  scrollbar-width: none;
+}
+.toc::-webkit-scrollbar { display: none; }
+.toc-item {
+  /* 修订 aj：目录项的「文字垂直居中」需要解决三个独立 bug——
+     ① flex-shrink:0：.toc 是 flex column，目录项超出容器时会被等比压缩到 ~23px，line-height 形同虚设
+     ② line-height:1.65：1.4 (21px) 不够 Inter 字体 g/j/p/q/y 的 descender，会被 overflow:hidden 切掉
+        （肉眼现象：「Vibe Coding」最后的 g 看起来像 a）
+     ③ padding 9/5 不对称：Inter baseline 偏低 + CJK em-box 视觉重心比 Latin cap-height 低，
+        混排时即使 padding 对称文字也偏上 ~2px——补偿成顶 9 / 底 5，视觉上才居中 */
+  flex-shrink: 0;
+  display: block;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+  padding: 9px 14px 5px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.toc-item:hover { background: var(--bg-soft); color: var(--text); }
+/* 章节节点：mono 小标签 */
+.toc-item.ch {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-meta);
+  margin-top: 14px;
+}
+.toc-item.ch:hover { color: var(--text); }
+/* 子页：缩进 */
+.toc-item.sub { padding-left: 30px; }
+/* 当前页：黑色胶囊（与章节胶囊同语言） */
+.toc-item.active { background: var(--text); color: #fff; }
+.toc-item.ch.active { background: var(--text); color: #fff; }
+
+/* ===== 右下角实时读数 ===== */
+.corner-meta {
+  position: absolute;
+  bottom: 36px; right: 60px;   /* 修订 y：读数外挪，给内容让位并与外扩对齐线呼应 */
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  letter-spacing: 1px;
+  color: var(--text-meta);
+  z-index: 3;
+  pointer-events: none;
+}
+
+/* ===== 翻页过渡：方向感知水平推移 =====
+   对齐纪律：内容对齐线 384px（64×6 网格线）；标题固定基线 190px */
+.slide {
+  position: absolute; inset: 0;
+  padding: 190px 120px 110px 384px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: flex-start;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(var(--dx, 24px));
+  transition: opacity 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+              visibility 0s linear 0.4s;
+  z-index: 1;
+}
+.slide.active {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition: opacity 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+              visibility 0s;
+  z-index: 1;
+}
+
+/* ===== 文字层级 ===== */
+.display { font-weight: 700; letter-spacing: -0.02em; color: var(--text); }
+.mono { font-family: 'JetBrains Mono', monospace; }
+
+.h-xxl { font-size: 140px; line-height: 1.05; }
+.h-l   { font-size: 92px;  line-height: 1.1; }
+.h-m   { font-size: 68px;  line-height: 1.18; }
+
+.body-xl { font-size: 39px; line-height: 1.55; color: var(--text-secondary); font-weight: 400; }
+.body-l  { font-size: 32px; line-height: 1.6;  color: var(--text-secondary); font-weight: 400; }
+.body-m  { font-size: 26px; line-height: 1.65; color: var(--text-secondary); font-weight: 400; }
+.body-xl strong, .body-l strong, .body-m strong { color: var(--text); font-weight: 600; }
+
+.eyebrow {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 18px; font-weight: 600;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 36px;
+}
+
+.hl { color: var(--accent); font-weight: 700; }
+
+/* ===== 页眉：悬浮在画布上，垂直中心与侧边栏 logo 同高（y=64） ===== */
+.slide-header {
+  position: absolute;
+  top: 0; height: 128px; left: 384px; right: 120px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 15px;
+  letter-spacing: 1.5px;
+  color: var(--text-meta);
+  text-transform: uppercase;
+  font-weight: 500;
+  pointer-events: none;
+}
+
+/* ===== 章节页 ===== */
+.chapter {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: flex-start;
+  position: relative;
+  z-index: 1;
+}
+.chapter .num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 18px; font-weight: 600;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--text);
+  padding: 12px 24px;
+  border-radius: 100px;
+  margin-bottom: 48px;
+}
+.chapter .title { font-size: 130px; line-height: 1.05; font-weight: 700; letter-spacing: -0.02em; }
+.chapter .sub {
+  font-size: 38px;
+  color: var(--text-secondary);
+  margin-top: 36px;
+  font-weight: 400;
+}
+/* 章节页大数字水印：右缘对齐内容网格，底边在元数据带之上 */
+.chapter-watermark {
+  position: absolute;
+  right: 120px; bottom: 96px;
+  font-size: 520px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: var(--text-faint);
+  pointer-events: none;
+  user-select: none;
+  z-index: 0;
+}
+
+/* ===== 卡片 ===== */
+.card {
+  background: var(--bg);
+  border: 1.5px solid var(--border);
+  border-radius: 20px;
+  padding: 52px 56px;
+}
+.card.soft { background: var(--bg-soft); border: none; }
+.card-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 16px; font-weight: 600;
+  letter-spacing: 2.5px;
+  text-transform: uppercase;
+  color: var(--text-meta);
+  margin-bottom: 22px;
+}
+
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; width: 100%; }
+.three-col { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; width: 100%; }
+
+/* ===== 列表 ===== */
+.bullet-list { list-style: none; margin-top: 16px; }
+.bullet-list li {
+  font-size: 32px; line-height: 1.6;
+  color: var(--text-secondary);
+  padding: 16px 0 16px 40px;
+  position: relative;
+}
+.bullet-list li::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 37px;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--text);
+}
+.bullet-list li strong { color: var(--text); font-weight: 600; }
+
+/* ===== 右侧锚点 ===== */
+.side-anchor {
+  position: absolute;
+  right: 120px; top: 50%;
+  transform: translateY(-50%);
+  width: 480px;
+  z-index: 0;
+}
+.anchor-num {
+  font-size: 440px; font-weight: 700;
+  line-height: 0.9;
+  letter-spacing: -0.04em;
+  color: var(--text-faint);
+  text-align: right;
+  user-select: none;
+}
+.anchor-card {
+  background: var(--bg);
+  border: 1.5px solid var(--border);
+  border-radius: 24px;
+  padding: 48px 52px;
+}
+.anchor-card .k {
+  font-size: 48px; font-weight: 700; line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.anchor-card .k em { font-style: normal; color: var(--accent); }
+.anchor-card .v {
+  font-size: 23px; line-height: 1.6;
+  color: var(--text-secondary);
+  margin-top: 20px;
+}
+
+/* ===== 大数字页 ===== */
+.big-stat { text-align: left; }
+.big-stat .num {
+  font-size: 380px; font-weight: 700;
+  line-height: 0.95; letter-spacing: -0.04em;
+  color: var(--text);
+}
+.big-stat .num .unit { font-size: 100px; font-weight: 700; margin-left: 16px; color: var(--text-secondary); }
+.big-stat .label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 24px; letter-spacing: 4px;
+  text-transform: uppercase;
+  color: var(--text-meta);
+  margin-top: 40px; font-weight: 600;
+}
+
+/* ===== 步骤卡 ===== */
+.step-card {
+  background: var(--bg);
+  border: 1.5px solid var(--border);
+  border-radius: 20px;
+  padding: 44px 40px;
+}
+.step-card .step-num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 16px; font-weight: 600;
+  letter-spacing: 2.5px;
+  text-transform: uppercase;
+  color: var(--text-meta);
+}
+.step-card .step-title {
+  font-size: 60px; font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 18px 0 20px; line-height: 1.1;
+  color: var(--text);
+}
+.step-card .step-desc {
+  font-size: 24px; line-height: 1.65;
+  color: var(--text-secondary);
+}
+.step-card .step-desc strong { color: var(--text); font-weight: 600; }
+
+/* ===== 标签（词汇页） ===== */
+.tag-row { display: flex; gap: 16px; flex-wrap: wrap; }
+.tag {
+  font-size: 26px;
+  font-weight: 500;
+  padding: 18px 32px;
+  border-radius: 100px;
+  background: var(--bg);
+  border: 1.5px solid var(--border);
+  color: var(--text);
+  position: relative;
+  cursor: default;
+  transition: border-color 0.2s;
+}
+.tag:hover { border-color: var(--text); }
+.tag.accent { background: var(--text); border-color: var(--text); color: #fff; font-weight: 600; }
+.tag .tag-tooltip {
+  position: absolute;
+  bottom: calc(100% + 16px);
+  left: 50%;
+  transform: translateX(-50%) scale(0.96);
+  background: #1f1f1f;
+  color: #fff;
+  font-size: 20px; font-weight: 400; line-height: 1.55;
+  padding: 24px 28px;
+  border-radius: 16px;
+  width: 430px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1), transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 8px 30px rgba(0,0,0,0.18);
+  z-index: 100;
+  text-align: left;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.tag .tag-tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%; left: 50%;
+  transform: translateX(-50%);
+  border: 9px solid transparent;
+  border-top-color: #1f1f1f;
+}
+.tag:hover .tag-tooltip { opacity: 1; transform: translateX(-50%) scale(1); }
+.tag .tag-tooltip strong { color: #5ef0a0; font-weight: 600; }
+
+/* ===== 公式大字卡 ===== */
+.formula {
+  font-size: 88px; font-weight: 700;
+  letter-spacing: -0.02em;
+  text-align: left;
+  padding: 64px 72px;
+  background: var(--bg);
+  border: 1.5px solid var(--border);
+  border-radius: 24px;
+}
+
+/* ===== 议程行 ===== */
+.agenda-row {
+  display: flex; align-items: baseline; gap: 44px;
+  padding: 22px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.agenda-row:last-child { border-bottom: none; }
+.agenda-row .time {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 20px; font-weight: 600;
+  letter-spacing: 2px;
+  color: var(--text);
+  min-width: 120px;
+  text-transform: uppercase;
+}
+.agenda-row .name { font-size: 32px; font-weight: 600; color: var(--text); min-width: 340px; }
+.agenda-row .note { font-size: 24px; color: var(--text-secondary); }
+.agenda-row.dim .time, .agenda-row.dim .name { color: var(--text-meta); }
+
+/* ===== 翻页控件：悬浮胶囊 ===== */
+.controls {
+  /* 修订 al：原 position:fixed 不受 stage scale 影响——小窗口/投影非 16:9 时控件不缩放、视觉断裂。
+     改 position:absolute 并移进 stage（HTML 顺序在 .stage 末尾），自动跟随 stage scale。
+     注：祖先有 transform 时，子代 position:fixed 会退化为 absolute，干脆显式 absolute 避免混淆。 */
+  position: absolute;
+  bottom: 24px; left: 50%;
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 16px;
+  background: rgba(255,255,255,0.9);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  padding: 10px 20px;
+  border-radius: 100px;
+  color: var(--text-secondary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px; letter-spacing: 1px;
+  z-index: 100;
+  opacity: 0.35;
+  transition: opacity 0.3s;
+}
+.controls:hover { opacity: 1; }
+.controls button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 16px;
+  display: flex; align-items: center; justify-content: center;
+}
+.controls button:hover { background: var(--bg-soft); }
+.counter { min-width: 70px; text-align: center; font-weight: 500; }
+
+.progress {
+  position: fixed;
+  top: 0; left: 0;
+  height: 3px;
+  background: var(--text);
+  z-index: 101;
+  transition: width 0.3s;
+}
+
+/* ===== 打字机光标 ===== */
+.cursor {
+  display: inline-block;
+  width: 3px; height: 1.05em;
+  background: var(--text);
+  margin-left: 5px;
+  vertical-align: -0.12em;
+  animation: blink 1.1s steps(1) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ===== 章节页裁切标记 ===== */
+.crop { position: absolute; inset: -48px -64px; pointer-events: none; }
+.crop i { position: absolute; width: 22px; height: 22px; border: 0 solid rgba(17,17,17,0.4); }
+.crop i.tl { left: 0; top: 0; border-left-width: 1.5px; border-top-width: 1.5px; }
+.crop i.tr { right: 0; top: 0; border-right-width: 1.5px; border-top-width: 1.5px; }
+.crop i.bl { left: 0; bottom: 0; border-left-width: 1.5px; border-bottom-width: 1.5px; }
+.crop i.br { right: 0; bottom: 0; border-right-width: 1.5px; border-bottom-width: 1.5px; }
+
+/* ===== 内容页版式（修订 w/x，用户裁定）=====
+   标题顶部左对齐（占用原页眉带，该页页眉只留右侧主题词），
+   内容在标题下方区域纵横双向居中、优先放大；
+   封面/章节页仍走原版左对齐。视频/论文等自明页免标题（center mid）。 */
+.top-title {
+  position: absolute;
+  top: 44px; left: 290px; right: 60px;   /* 修订 y：对齐线外扩，与内容左右边缘对齐 */
+  text-align: left;
+  font-size: 52px; font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  z-index: 2;
+}
+.slide.center {
+  padding: 150px 60px 60px 290px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+/* 内容页页眉与标题/内容共用同一套左右对齐线（290/60） */
+.slide.center .slide-header { left: 290px; right: 60px; }
+.slide.center.mid {
+  /* 修订 z：免标题页的居中基准区 = 页眉带下缘(128) ~ 读数带上方 × 侧边栏右缘 ~ 右缘 */
+  padding: 128px 60px 70px 290px;
+}
+
+/* ===== 工具类 ===== */
+.mt-xl { margin-top: 64px; }
+.mt-l { margin-top: 40px; }
+.mt-m { margin-top: 24px; }
+
+/* ===== 渐显步骤动效（十步流水线 / 四条原则 等）=====
+   初始整张卡片用 visibility:hidden 完全不渲染（border + 内容都不见），
+   按 → 时切到 visible 并叠加 fade + 上浮 + 缩放，整张卡有明确"弹出"感——
+   不是 opacity-only fade（那种只看到边框淡入、"边框在切换"的视觉错觉）。 */
+.reveal-step {
+  visibility: hidden;
+  opacity: 0;
+  transform: translateY(28px) scale(0.92);
+  transition: opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+              visibility 0s linear 0.45s;
+  pointer-events: none;
+}
+.reveal-step.shown {
+  visibility: visible;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  transition: opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+              visibility 0s;
+}
+.reveal-final { visibility: hidden; opacity: 0; transition: opacity 0.4s ease, visibility 0s linear 0.4s; }
+.reveal-final.shown { visibility: visible; opacity: 1; transition: opacity 0.4s ease, visibility 0s; }
+.reveal-hint { transition: opacity 0.3s ease; }
+.reveal-hint.done { opacity: 0; }
+
+/* ===== 居中页内卡片默认左对齐 =====
+   .slide.center 整页 text-align:center 让短标题/引导句居中，但卡片内多行文案
+   居中会"行尾参差不齐、阅读跳跃"。给所有 .step-card / .card 默认左对齐，
+   仍想居中的卡片（如对比页 5 列状态条）用 inline style="text-align:center" 覆盖。 */
+.slide.center .step-card,
+.slide.center .card { text-align: left; }
+
+/* ===== 提示词代码块的复制按钮 =====
+   悬浮在深色代码块右上角内侧，胶囊形，浅灰描边，hover 变实白。 */
+.prompt-box .copy-btn {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  z-index: 5;
+  background: rgba(255,255,255,0.08);
+  color: #e8eaed;
+  border: 1px solid rgba(255,255,255,0.2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  padding: 8px 18px;
+  border-radius: 100px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+.prompt-box .copy-btn:hover { background: #fff; color: #1f1f1f; border-color: #fff; }
+.prompt-box .copy-btn.done { background: var(--accent); color: #0a2a14; border-color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div class="progress" id="progress"></div>
+
+<div class="stage" id="stage">
+
+<div class="frame right"></div>
+
+<!-- 左侧侧边栏：logo + 目录树（栏内无任何横向分割线，无底部计数） -->
+<aside class="sidebar">
+  <div class="brand"><svg width="996" height="240" viewBox="0 0 996 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+<rect width="240" height="240" rx="53.6741" fill="url(#paint0_linear_2111_594)"/>
+<g filter="url(#filter0_d_2111_594)">
+<path d="M33.9443 121.086C33.9444 74.8756 69.7314 38.0762 116.52 38.0762C129.707 38.0762 146.945 41.5045 161.017 51.2321C163.188 52.7332 163.732 55.7104 162.231 57.8819C160.73 60.0534 157.752 60.5969 155.581 59.0958C143.517 50.7564 128.332 47.6358 116.52 47.6358C75.1183 47.6358 43.504 80.0473 43.504 121.086C43.504 160.085 75.5542 193.095 116.032 193.13C132.425 192.697 144.897 188.623 153.12 183.385C161.535 178.024 164.825 171.971 164.825 167.684C164.825 166.409 164.419 165.073 163.492 163.413C162.515 161.664 161.204 159.957 159.551 157.715C156.454 153.517 152.41 147.832 152.41 139.998C152.41 133.455 155.633 128.334 160.225 125.292C162.87 123.54 165.95 122.483 169.125 122.176C168.288 113.827 168.961 107.251 170.958 102.375C173.538 96.0751 178.441 92.546 184.33 92.546C188.791 92.5461 192.446 94.059 194.804 97.356C196.862 100.234 197.407 103.822 197.66 106.687C197.793 108.199 197.858 109.784 197.924 111.254C197.991 112.766 198.06 114.199 198.191 115.599C198.457 118.437 198.952 120.73 199.901 122.533C203.661 129.677 206.842 136.723 207.195 144.104C207.564 151.797 204.861 159.17 198.404 167.006C196.725 169.043 193.712 169.333 191.675 167.655C189.638 165.976 189.348 162.963 191.026 160.926C196.356 154.459 197.876 149.341 197.647 144.561C197.403 139.472 195.168 134.065 191.441 126.985C189.628 123.54 188.981 119.78 188.673 116.49C188.517 114.827 188.441 113.176 188.374 111.679C188.305 110.14 188.248 108.787 188.137 107.526C187.901 104.844 187.475 103.542 187.028 102.917C186.88 102.71 186.495 102.106 184.33 102.106C182.892 102.106 181.143 102.73 179.805 105.997C178.333 109.592 177.609 116.052 179.349 126.5C179.613 128.084 179.065 129.694 177.889 130.786C176.714 131.879 175.068 132.309 173.508 131.931C170.706 131.252 167.714 131.799 165.504 133.262C163.406 134.652 161.97 136.871 161.97 139.998C161.97 144.402 164.133 147.823 167.244 152.04C168.694 154.006 170.487 156.334 171.838 158.751C173.238 161.258 174.384 164.222 174.384 167.684C174.384 176.6 168.038 185.217 158.256 191.447C148.294 197.794 134.032 202.228 116.219 202.688C116.178 202.689 116.136 202.69 116.095 202.69C70.2735 202.69 33.9443 165.35 33.9443 121.086Z" fill="#EEEEEE"/>
+<path d="M181.655 51.092C182.419 48.7751 185.696 48.7751 186.46 51.092L187.729 54.9416C189.235 59.5129 192.821 63.0985 197.392 64.6051L201.242 65.8738C203.559 66.6374 203.559 69.9148 201.242 70.6784L197.392 71.9472C192.821 73.4537 189.235 77.0394 187.729 81.6107L186.46 85.4602C185.696 87.7771 182.419 87.7771 181.655 85.4602L180.387 81.6107C178.88 77.0394 175.294 73.4537 170.723 71.9472L166.874 70.6784C164.557 69.9148 164.557 66.6374 166.874 65.8738L170.723 64.6051C175.294 63.0985 178.88 59.5129 180.387 54.9416L181.655 51.092Z" fill="#00E75E"/>
+<ellipse cx="83.1687" cy="108.335" rx="10.7634" ry="17.3205" transform="rotate(2.46958 83.1687 108.335)" fill="#EEEEEE"/>
+<ellipse cx="125.316" cy="106.383" rx="11.5513" ry="18.5882" transform="rotate(2.46958 125.316 106.383)" fill="#EEEEEE"/>
+</g>
+<path d="M940.438 207.917C928.278 207.917 917.478 205.357 908.038 200.237C898.598 194.957 891.078 187.757 885.478 178.637C880.038 169.517 877.318 159.117 877.318 147.437C877.318 135.917 879.958 125.677 885.238 116.717C890.678 107.597 898.038 100.397 907.318 95.117C916.598 89.677 926.918 86.957 938.278 86.957C949.478 86.957 959.318 89.517 967.798 94.637C976.438 99.597 983.158 106.477 987.958 115.277C992.918 123.917 995.398 133.757 995.398 144.797C995.398 146.877 995.238 149.037 994.918 151.277C994.758 153.357 994.358 155.757 993.718 158.477L896.278 158.717V135.197L979.078 134.957L966.358 144.797C966.038 137.917 964.758 132.157 962.518 127.517C960.438 122.877 957.318 119.357 953.158 116.957C949.158 114.397 944.198 113.117 938.278 113.117C932.038 113.117 926.598 114.557 921.958 117.437C917.318 120.157 913.718 124.077 911.158 129.197C908.758 134.157 907.558 140.077 907.558 146.957C907.558 153.997 908.838 160.157 911.398 165.437C914.118 170.557 917.958 174.557 922.918 177.437C927.878 180.157 933.638 181.517 940.198 181.517C946.118 181.517 951.478 180.557 956.278 178.637C961.078 176.557 965.238 173.517 968.758 169.517L987.238 187.997C981.638 194.557 974.758 199.517 966.598 202.877C958.598 206.237 949.878 207.917 940.438 207.917Z" fill="#222222"/>
+<path d="M811.569 205.519V41.3594H843.009V205.519H811.569ZM784.449 117.199V89.5994H870.129V117.199H784.449Z" fill="#222222"/>
+<path d="M701.915 207.919C691.355 207.919 681.835 205.279 673.355 199.999C664.875 194.719 658.235 187.519 653.435 178.399C648.635 169.279 646.235 159.039 646.235 147.679C646.235 136.159 648.635 125.839 653.435 116.719C658.235 107.599 664.875 100.399 673.355 95.1192C681.835 89.8392 691.355 87.1992 701.915 87.1992C710.235 87.1992 717.675 88.8792 724.235 92.2392C730.795 95.5992 735.995 100.319 739.835 106.399C743.835 112.319 745.995 119.039 746.315 126.559V168.319C745.995 175.999 743.835 182.799 739.835 188.719C735.995 194.639 730.795 199.359 724.235 202.879C717.675 206.239 710.235 207.919 701.915 207.919ZM707.675 178.879C716.475 178.879 723.595 175.999 729.035 170.239C734.475 164.319 737.195 156.719 737.195 147.439C737.195 141.359 735.915 135.999 733.355 131.359C730.955 126.559 727.515 122.879 723.035 120.319C718.715 117.599 713.595 116.239 707.675 116.239C701.915 116.239 696.795 117.599 692.315 120.319C687.995 122.879 684.555 126.559 681.995 131.359C679.595 135.999 678.395 141.359 678.395 147.439C678.395 153.679 679.595 159.199 681.995 163.999C684.555 168.639 687.995 172.319 692.315 175.039C696.795 177.599 701.915 178.879 707.675 178.879ZM735.515 205.519V174.319L740.555 145.999L735.515 118.159V89.5992H766.715V205.519H735.515Z" fill="#222222"/>
+<path d="M596.67 205.519V139.039C596.67 132.159 594.51 126.559 590.19 122.239C585.87 117.919 580.27 115.759 573.39 115.759C568.91 115.759 564.91 116.719 561.39 118.639C557.87 120.559 555.07 123.279 552.99 126.799C551.07 130.319 550.11 134.399 550.11 139.039L537.87 132.799C537.87 123.679 539.79 115.759 543.63 109.039C547.63 102.159 553.07 96.7992 559.95 92.9592C566.99 89.1192 574.91 87.1992 583.71 87.1992C592.19 87.1992 599.79 89.3592 606.51 93.6792C613.23 97.8392 618.51 103.359 622.35 110.239C626.19 116.959 628.11 124.239 628.11 132.079V205.519H596.67ZM518.67 205.519V89.5992H550.11V205.519H518.67Z" fill="#222222"/>
+<path d="M461.904 205.519V139.039C461.904 132.159 459.744 126.559 455.424 122.239C451.104 117.919 445.504 115.759 438.624 115.759C434.144 115.759 430.144 116.719 426.624 118.639C423.104 120.559 420.304 123.279 418.224 126.799C416.304 130.319 415.344 134.399 415.344 139.039L403.104 132.799C403.104 123.679 405.024 115.759 408.864 109.039C412.864 102.159 418.304 96.7992 425.184 92.9592C432.224 89.1192 440.144 87.1992 448.944 87.1992C457.424 87.1992 465.024 89.3592 471.744 93.6792C478.464 97.8392 483.744 103.359 487.584 110.239C491.424 116.959 493.344 124.239 493.344 132.079V205.519H461.904ZM383.904 205.519V89.5992H415.344V205.519H383.904Z" fill="#222222"/>
+<path d="M320 205.517V36.7969H352.64V205.517H320Z" fill="#222222"/>
+<defs>
+<filter id="filter0_d_2111_594" x="24.7136" y="38.0762" width="191.746" height="183.077" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+<feFlood flood-opacity="0" result="BackgroundImageFix"/>
+<feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+<feOffset dy="9.23077"/>
+<feGaussianBlur stdDeviation="4.61538"/>
+<feComposite in2="hardAlpha" operator="out"/>
+<feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.2 0"/>
+<feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_2111_594"/>
+<feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_2111_594" result="shape"/>
+</filter>
+<linearGradient id="paint0_linear_2111_594" x1="120" y1="0" x2="120" y2="240" gradientUnits="userSpaceOnUse">
+<stop stop-color="#333333"/>
+<stop offset="1" stop-color="#181818"/>
+</linearGradient>
+</defs>
+</svg></div>
+  <nav class="toc">
+    <a class="toc-item ch" data-idx="0">封面</a>
+    <a class="toc-item ch" data-idx="1">CH00 为什么这么完整地走</a>
+    <a class="toc-item sub" data-idx="2">和以前不一样在哪</a>
+    <a class="toc-item sub" data-idx="3">为什么要完整走（快≠对）</a>
+    <a class="toc-item sub" data-idx="4">真实做法：一个人+工具</a>
+    <a class="toc-item sub" data-idx="5">六步全流程</a>
+    <a class="toc-item sub" data-idx="6">Step 01 提出问题</a>
+    <a class="toc-item sub" data-idx="7">问题假设 · 3 个现实案例</a>
+    <a class="toc-item sub" data-idx="8">问题假设 · 套回本案例</a>
+    <a class="toc-item sub" data-idx="9">传统 vs 现在</a>
+    <a class="toc-item sub" data-idx="10">六步在本案例的落地</a>
+    <a class="toc-item sub" data-idx="11">vs Demo 级产出</a>
+    <a class="toc-item ch" data-idx="12">CH01 发现市场机会</a>
+    <a class="toc-item sub" data-idx="13">做之前要问的三个问题</a>
+    <a class="toc-item ch" data-idx="14">CH02 定义产品需求</a>
+    <a class="toc-item sub" data-idx="15">四份文档：四件套</a>
+    <a class="toc-item sub" data-idx="16">MRD 是什么</a>
+    <a class="toc-item sub" data-idx="17">MRD 示例 · 减脂健身</a>
+    <a class="toc-item sub" data-idx="18">BRD 是什么</a>
+    <a class="toc-item sub" data-idx="19">BRD 示例 · 共享充电宝</a>
+    <a class="toc-item sub" data-idx="20">PRD 是什么</a>
+    <a class="toc-item sub" data-idx="21">PRD 示例 · 待办清单</a>
+    <a class="toc-item sub" data-idx="22">为什么三份要串行</a>
+    <a class="toc-item ch" data-idx="23">CH03 先搞懂三个词</a>
+    <a class="toc-item sub" data-idx="24">前端 = 餐厅大堂</a>
+    <a class="toc-item sub" data-idx="25">后端 = 餐厅后厨</a>
+    <a class="toc-item sub" data-idx="26">数据库 = 仓库冰箱</a>
+    <a class="toc-item sub" data-idx="27">一次完整交互 · 三层结构</a>
+    <a class="toc-item ch" data-idx="28">结尾 · 接下来跟我实操</a>
+  </nav>
+</aside>
+
+<div class="corner-meta">x:<span id="mx">0960</span> y:<span id="my">0540</span> · fps:<span id="fps">60</span> · θ:<span id="theta">0.0</span>°</div>
+
+<!-- ⬇️ slide 开始 ⬇️ -->
+
+<section class="slide active">
+  <div class="eyebrow">Product Development Pipeline · 方法论篇</div>
+  <h1 class="display h-xxl">产品开发<br>全流程</h1>
+  <p class="body-xl mt-l">一个真实案例，把"在公司里开发一个产品"完整跑一遍</p>
+  <p style="position:absolute;bottom:110px;left:290px;font-size:22px;letter-spacing:2px;color:var(--text-secondary);font-weight:500">前期方法论篇 · 后续跟我实操</p>
+</section>
+
+<section class="slide">
+  <div class="slide-header"><span>Chapter 00</span><span>Why This Way</span></div>
+  <div class="chapter-watermark">00</div>
+  <div class="chapter">
+    <span class="num">Chapter 00</span>
+    <h2 class="title">为什么要这么<br>完整地走一遍</h2>
+    <div class="sub">"快"不等于"好"——做得对，比做得快更重要。</div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>这次和以前不一样</span></div>
+  <div class="top-title">不是做小东西，是一个真实产品 · 完整跑通</div>
+  <div style="width:100%;max-width:1620px">
+    <p class="body-l" style="text-align:center;color:var(--text-secondary);margin-bottom:22px">我们之前上课做的产品，<strong>大多偏轻、偏有趣，是单个的小东西</strong>。今天这个不一样——</p>
+    <div class="card" style="padding:42px 52px">
+      <div class="card-label">这次的不一样</div>
+      <ul class="bullet-list" style="font-size:30px;margin-top:14px">
+        <li>是一个<strong>真实案例</strong>，从头到尾走一遍"在公司里开发产品"的全过程</li>
+        <li>一直走到<strong>落地、部署、上线</strong>——结束后你拿到一个能发给别人用的<strong>真实链接</strong></li>
+        <li>把完整产品的所有技术全串到——<strong>前端 / 后端 / 数据库</strong>，一个不落</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>快 ≠ 好</span></div>
+  <div class="top-title">"快"不等于"好"</div>
+  <div style="width:100%;max-width:1620px">
+    <p class="body-l" style="text-align:center;color:var(--text-secondary);margin-bottom:24px">用 AI 做应用确实<strong>太方便、太快了</strong>。但快出来的东西——</p>
+    <div class="two-col">
+      <div class="card" style="padding:38px 44px">
+        <div class="card-label">三个真正的问题</div>
+        <ul class="bullet-list" style="font-size:26px;margin-top:14px">
+          <li>是不是真的<strong>有用</strong>？</li>
+          <li>是不是真的<strong>有价值</strong>？</li>
+          <li>能不能被<strong>市场认可</strong>？放进简历能不能让面试官认可？</li>
+        </ul>
+      </div>
+      <div class="card" style="padding:38px 44px;border-color:var(--text)">
+        <div class="card-label" style="color:var(--accent)">这套流程要解决的</div>
+        <div class="body-l mt-m" style="color:var(--text);line-height:1.6">"做得快"之外的<strong>那半句</strong>——<br><span style="font-size:48px;font-weight:700">做得对。</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>企业里的真实做法</span></div>
+  <div class="top-title">现在企业里真实的做法</div>
+  <div style="display:inline-block">
+    <div class="formula" style="font-size:60px">
+      一个人 &nbsp;+&nbsp; <span class="hl">Claude Code · Agent Skills · MCP</span>
+    </div>
+  </div>
+  <p class="body-l mt-l" style="max-width:1500px;text-align:center;color:var(--text-secondary)">这不是空谈——这两年新公司的<strong>平均人数一直在降</strong>：</p>
+  <div class="three-col mt-l" style="max-width:1620px">
+    <div class="card" style="padding:30px 32px">
+      <div class="card-label">十几年前</div>
+      <div style="font-size:62px;font-weight:700;line-height:1.1;letter-spacing:-0.02em;margin-top:10px">7-8<span style="font-size:24px;font-weight:600;margin-left:6px;color:var(--text-secondary)">人</span></div>
+      <div class="body-m mt-m" style="font-size:22px">一家成立一年的公司</div>
+    </div>
+    <div class="card" style="padding:30px 32px;border-color:var(--text)">
+      <div class="card-label" style="color:var(--accent)">如今的版本</div>
+      <div style="font-size:62px;font-weight:700;line-height:1.1;letter-spacing:-0.02em;margin-top:10px">1-2<span style="font-size:24px;font-weight:600;margin-left:6px;color:var(--text-secondary)">人</span></div>
+      <div class="body-m mt-m" style="font-size:22px">2 人 + 十几个 AI 工具，<strong>第一年数亿美元营收</strong></div>
+    </div>
+    <div class="card" style="padding:30px 32px;background:var(--bg-soft);border:none">
+      <div class="card-label">Sam Altman 预测</div>
+      <div style="font-size:42px;font-weight:700;line-height:1.15;letter-spacing:-0.02em;margin-top:14px">一个人的<br><span class="hl">十亿美元公司</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>六步全流程</span></div>
+  <div class="top-title">一套完整的产品开发流程 · 从提出问题到上线</div>
+  <div style="width:100%;max-width:1700px" data-step-reveal>
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:12px">
+      <div class="step-card reveal-step" data-step="0" style="padding:24px 18px;border-color:var(--text)">
+        <div class="step-num" style="color:var(--accent)">Step 01</div>
+        <div style="font-size:23px;font-weight:700;margin-top:10px;line-height:1.3">提出<br>问题</div>
+      </div>
+      <div class="step-card reveal-step" data-step="1" style="padding:24px 18px">
+        <div class="step-num">Step 02</div>
+        <div style="font-size:23px;font-weight:700;margin-top:10px;line-height:1.3">发现<br>市场机会</div>
+      </div>
+      <div class="step-card reveal-step" data-step="2" style="padding:24px 18px">
+        <div class="step-num">Step 03</div>
+        <div style="font-size:23px;font-weight:700;margin-top:10px;line-height:1.3">定义<br>产品需求</div>
+      </div>
+      <div class="step-card reveal-step" data-step="3" style="padding:24px 18px">
+        <div class="step-num">Step 04</div>
+        <div style="font-size:23px;font-weight:700;margin-top:10px;line-height:1.3">设计<br>产品原型</div>
+      </div>
+      <div class="step-card reveal-step" data-step="4" style="padding:24px 18px">
+        <div class="step-num">Step 05</div>
+        <div style="font-size:23px;font-weight:700;margin-top:10px;line-height:1.3">快速<br>开发实现</div>
+      </div>
+      <div class="step-card reveal-step" data-step="5" style="padding:24px 18px">
+        <div class="step-num">Step 06</div>
+        <div style="font-size:23px;font-weight:700;margin-top:10px;line-height:1.3">完成<br>产品上线</div>
+      </div>
+    </div>
+    <p class="body-l reveal-final mt-xl" style="color:var(--text-secondary);text-align:center"><strong>Step 01「提出问题」最容易被跳过，却决定后面所有事</strong>——下一页细说。</p>
+    <div class="reveal-hint" style="position:absolute;bottom:96px;left:50%;transform:translateX(-50%);font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:2px;color:var(--text-meta);text-transform:uppercase">按 → 依次点亮 · <span class="reveal-counter">0</span>/6</div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>Step 01 · 提出问题</span></div>
+  <div class="top-title">第 1 步「提出问题」—— 整个流程的起点</div>
+  <p class="body-l" style="max-width:1620px;text-align:left;color:var(--text-secondary);margin-bottom:18px">整个流程的第一步<strong>不是调研，而是提出问题</strong>——在做具体市场调研前，先把要解决的问题想清楚。不然你根本无从下手：爬谁的数据、验证什么，全没方向。具体做法是<strong>打磨一个可检验的问题假设</strong>，围绕三个追问反复磨：</p>
+  <div style="width:100%;max-width:1700px">
+    <div class="three-col">
+      <div class="step-card">
+        <div class="step-num">追问 01</div>
+        <div class="step-title" style="font-size:34px;line-height:1.25">谁有这个问题？<br>这是否构成一个市场？</div>
+        <div class="step-desc mt-m">用户画像够不够具体？人群够不够大？</div>
+      </div>
+      <div class="step-card">
+        <div class="step-num">追问 02</div>
+        <div class="step-title" style="font-size:34px;line-height:1.25">已经有人在<br>解决它了吗？</div>
+        <div class="step-desc mt-m">如果有，他们做得怎么样？效果如何？</div>
+      </div>
+      <div class="step-card">
+        <div class="step-num">追问 03</div>
+        <div class="step-title" style="font-size:34px;line-height:1.25">方案要做到<br>什么程度才算真解决？</div>
+        <div class="step-desc mt-m">我的想法做到了那个程度吗？</div>
+      </div>
+    </div>
+    <div class="card mt-l" style="padding:30px 44px;border-color:var(--text)">
+      <div class="card-label" style="color:var(--accent)">终极问题</div>
+      <div style="font-size:42px;font-weight:700;margin-top:12px;line-height:1.3">三个追问最终汇聚成一个问题 · <span class="hl">这值得构建吗？</span></div>
+      <div class="body-m mt-m" style="color:var(--text-secondary)">答案是肯定的，才往下走。否则——回去打磨问题，或换个方向。</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>Step 01 · 举例 · 可检验的问题假设</span></div>
+  <div class="top-title">几个例子 · 把"可检验的问题假设"理解透</div>
+  <div style="width:100%;max-width:1700px">
+    <div class="step-card" style="padding:32px 40px;border-color:var(--text)">
+      <div class="step-num" style="color:var(--accent)">例 01 · 模糊 vs 可检验</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:32px;margin-top:14px">
+        <div>
+          <div style="font-size:22px;color:var(--warn);font-weight:600;margin-bottom:8px">✕ 模糊版</div>
+          <div class="body-m" style="color:var(--text)">"现在人都很孤独，我想做个 AI 陪伴产品"——谁孤独、什么场景、多频繁都没说清，<strong>没法验证</strong>。</div>
+        </div>
+        <div>
+          <div style="font-size:22px;color:var(--accent);font-weight:600;margin-bottom:8px">✓ 可检验版</div>
+          <div class="body-m" style="color:var(--text)">"<span class="hl">独居、社交圈窄的年轻上班族，深夜情绪低落时缺一个能即时倾诉、又记得住自己的对象</span>"——人群 / 场景 / 频次都具体，才能拿数据去验证。</div>
+        </div>
+      </div>
+    </div>
+    <div class="two-col mt-l">
+      <div class="step-card" style="padding:32px 40px">
+        <div class="step-num">例 02 · Airbnb 先验证再做</div>
+        <div class="body-m mt-m" style="color:var(--text)">问题假设：<strong>大型展会期间酒店订满、价格暴涨，有人愿意花钱住进别人家的空房</strong>。</div>
+        <div class="body-m mt-m" style="color:var(--text)">创始人在<strong>设计大会期间自己出租气垫床</strong>验证假设——没做产品，先用最土的方式确认问题真实。</div>
+      </div>
+      <div class="step-card" style="padding:32px 40px">
+        <div class="step-num">例 03 · Uber 先验证再做</div>
+        <div class="body-m mt-m" style="color:var(--text)">最早<strong>根本没做 App</strong>——先用一个电话号码：用户打过来，Uber 的人手动找个司机再回电。</div>
+        <div class="body-m mt-m" style="color:var(--text)">用最土的方式确认"打车难"是真问题，<strong>再谈产品</strong>。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>Step 01 · 套回本案例 · 三个追问</span></div>
+  <div class="top-title">例 04 · 把三个追问套回我们这个产品</div>
+  <div style="width:100%;max-width:1700px">
+    <div class="three-col">
+      <div class="step-card" style="padding:32px 36px">
+        <div class="step-num">追问 01 · 谁</div>
+        <div class="step-title" style="font-size:36px;line-height:1.25;margin-top:14px">谁有这个问题？</div>
+        <div class="body-m mt-m" style="color:var(--text)"><strong>独居青年、社交焦虑人群</strong>——人群大、是真市场。</div>
+      </div>
+      <div class="step-card" style="padding:32px 36px">
+        <div class="step-num">追问 02 · 谁在解决</div>
+        <div class="step-title" style="font-size:36px;line-height:1.25;margin-top:14px">已经有人在解决了吗？</div>
+        <div class="body-m mt-m" style="color:var(--text)">Replika / Character.AI 在做，但用户抱怨<strong>"记不住我""人设变了""越来越贵"</strong>——没解决好。</div>
+      </div>
+      <div class="step-card" style="padding:32px 36px;border-color:var(--text)">
+        <div class="step-num" style="color:var(--accent)">追问 03 · 做到什么</div>
+        <div class="step-title" style="font-size:36px;line-height:1.25;margin-top:14px">方案要做到什么？</div>
+        <div class="body-m mt-m" style="color:var(--text)"><strong>长期记住用户、稳定陪伴</strong>——我们押的 <span class="hl">"记忆系统"</span> 正是冲这个去的。</div>
+      </div>
+    </div>
+    <div class="card mt-l" style="padding:28px 44px;background:var(--bg-soft);border:none">
+      <div class="body-l" style="color:var(--text)">问题假设立住了，接下来的"发现市场机会"——也就是<strong>三份文档里的第一份 MRD</strong>——本质就是用真实数据去检验这个假设。</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>代价差多少</span></div>
+  <div class="top-title">代价差多少 · 传统 vs 现在</div>
+  <div style="width:100%;max-width:1500px">
+    <div class="two-col">
+      <div class="card" style="padding:48px 52px">
+        <div class="card-label">传统方式</div>
+        <div style="font-size:80px;font-weight:700;line-height:1.05;color:var(--text-secondary);letter-spacing:-0.03em;margin-top:18px">¥ 300<span style="font-size:36px;font-weight:600;margin-left:6px">万 +</span></div>
+        <div style="font-size:80px;font-weight:700;line-height:1.05;color:var(--text-secondary);letter-spacing:-0.03em;margin-top:8px">7<span style="font-size:36px;font-weight:600;margin-left:6px">个月</span></div>
+        <div class="body-m mt-l" style="color:var(--text-secondary)">一支团队 · 分角色按部就班</div>
+      </div>
+      <div class="card" style="padding:48px 52px;border-color:var(--text)">
+        <div class="card-label" style="color:var(--accent)">现在 · 一个人 + AI</div>
+        <div style="font-size:80px;font-weight:700;line-height:1.05;color:var(--accent);letter-spacing:-0.03em;margin-top:18px">2<span style="font-size:36px;font-weight:600;margin-left:6px;color:var(--text)">周</span></div>
+        <div style="font-size:80px;font-weight:700;line-height:1.05;color:var(--text);letter-spacing:-0.03em;margin-top:8px">1<span style="font-size:36px;font-weight:600;margin-left:6px;color:var(--text-secondary)">个人</span></div>
+        <div class="body-m mt-l" style="color:var(--text)">Claude Code + Agent Skills + MCP</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>本案例的落地</span></div>
+  <div class="top-title">六步在本案例里 · 具体这样落地</div>
+  <div style="width:100%;max-width:1700px">
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;align-items:stretch">
+      <div class="card" style="padding:22px 14px;text-align:center;border-color:var(--text)"><div class="card-label" style="font-size:13px;color:var(--accent)">Step 01</div><div style="font-size:20px;font-weight:700;margin-top:8px;line-height:1.3">定下<br>问题假设</div></div>
+      <div class="card" style="padding:22px 14px;text-align:center"><div class="card-label" style="font-size:13px">Step 02</div><div style="font-size:20px;font-weight:700;margin-top:8px;line-height:1.3">爬真实<br>用户评论</div></div>
+      <div class="card" style="padding:22px 14px;text-align:center"><div class="card-label" style="font-size:13px">Step 03</div><div style="font-size:20px;font-weight:700;margin-top:8px;line-height:1.3">MRD →<br>BRD → PRD</div></div>
+      <div class="card" style="padding:22px 14px;text-align:center"><div class="card-label" style="font-size:13px">Step 04</div><div style="font-size:20px;font-weight:700;margin-top:8px;line-height:1.3">技术选型<br>+ 界面设计</div></div>
+      <div class="card" style="padding:22px 14px;text-align:center"><div class="card-label" style="font-size:13px">Step 05</div><div style="font-size:20px;font-weight:700;margin-top:8px;line-height:1.3">开发<br>跑起来</div></div>
+      <div class="card" style="padding:22px 14px;text-align:center"><div class="card-label" style="font-size:13px">Step 06</div><div style="font-size:20px;font-weight:700;margin-top:8px;line-height:1.3">推送<br>上线</div></div>
+    </div>
+    <div class="card mt-l" style="padding:24px 36px;background:var(--bg-soft);border:none">
+      <div class="body-m" style="color:var(--text)">举例："很多人有<strong>情感倾诉</strong>的需求，现有产品没满足好" → <strong>爬评论验证</strong>（提出问题 + 发现机会）→ 三份文档 → 选型/设计 → 开发 → 上线。</div>
+    </div>
+    <div class="card mt-m" style="padding:20px 36px;background:var(--bg-soft);border:none">
+      <div class="body-m" style="color:var(--text)">三份文档<strong>一份接一份</strong>——上一份的结论自动传给下一份，<span class="hl">中间不丢信息</span>。</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>核心差异</span></div>
+  <div class="top-title">工程化产品流程 vs Demo 级产出 · 四条核心差异</div>
+  <div style="width:100%;max-width:1620px" data-step-reveal>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:24px">
+      <div class="step-card reveal-step" data-step="0" style="border-color:var(--text)">
+        <div class="step-num" style="color:var(--accent)">01</div>
+        <div class="step-title" style="font-size:38px">数据先行，不拍脑袋</div>
+        <div class="step-desc">所有需求都从<strong>真实评论</strong>里提炼，数据里找不到支撑的就不写——宁可少做，不做错。</div>
+      </div>
+      <div class="step-card reveal-step" data-step="1">
+        <div class="step-num">02</div>
+        <div class="step-title" style="font-size:38px">串行传递，零丢失</div>
+        <div class="step-desc">MRD → BRD → PRD 像<strong>接力棒</strong>，信息一棒一棒往下递，不重复提问、不丢结论。</div>
+      </div>
+      <div class="step-card reveal-step" data-step="2">
+        <div class="step-num">03</div>
+        <div class="step-title" style="font-size:38px">判断权始终在人</div>
+        <div class="step-desc">AI 干<strong>执行</strong>，你干<strong>判断</strong>——也正是如今最值钱的那部分能力。</div>
+      </div>
+      <div class="step-card reveal-step" data-step="3">
+        <div class="step-num">04</div>
+        <div class="step-title" style="font-size:38px">成本断崖式下降</div>
+        <div class="step-desc">一个人很短时间就能走一遍，不行就换一个，<strong>试错几乎零成本</strong>。</div>
+      </div>
+    </div>
+    <div class="reveal-hint" style="position:absolute;bottom:96px;left:50%;transform:translateX(-50%);font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:2px;color:var(--text-meta);text-transform:uppercase">按 → 依次展开 · <span class="reveal-counter">0</span>/4</div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="slide-header"><span>Chapter 01</span><span>Discover Market</span></div>
+  <div class="chapter-watermark">01</div>
+  <div class="chapter">
+    <span class="num">Chapter 01</span>
+    <h2 class="title">用 AI<br>发现市场机会</h2>
+    <div class="sub">做产品之前，先问自己三个问题。</div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>三个问题</span></div>
+  <div class="top-title">做之前，起码要问自己三个问题</div>
+  <div style="width:100%;max-width:1620px">
+    <div class="three-col">
+      <div class="step-card">
+        <div class="step-num">问题 01</div>
+        <div class="step-title" style="font-size:46px;line-height:1.2">市场<br>真的存在吗？</div>
+        <div class="step-desc mt-m">这个方向到底有多少人在为同一件事犯愁？</div>
+      </div>
+      <div class="step-card">
+        <div class="step-num">问题 02</div>
+        <div class="step-title" style="font-size:46px;line-height:1.2">用户<br>真的需要吗？</div>
+        <div class="step-desc mt-m">他们正在用什么凑合？愿意为更好的方案付出什么？</div>
+      </div>
+      <div class="step-card" style="border-color:var(--text)">
+        <div class="step-num" style="color:var(--accent)">问题 03</div>
+        <div class="step-title" style="font-size:46px;line-height:1.2">机会<br>真的可做吗？</div>
+        <div class="step-desc mt-m">现有玩家是谁？哪里没做好？我们能切进去的缝在哪？</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="slide-header"><span>Chapter 02</span><span>Define Product</span></div>
+  <div class="chapter-watermark">02</div>
+  <div class="chapter">
+    <span class="num">Chapter 02</span>
+    <h2 class="title">用 AI<br>定义产品需求</h2>
+    <div class="sub">回答两个问题：怎么赚钱、做什么功能。</div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>四份文档闭环</span></div>
+  <div class="top-title">标准流程 · 四份文档</div>
+  <div style="font-family:'JetBrains Mono',monospace;font-size:22px;letter-spacing:3px;color:var(--text-meta);text-transform:uppercase;text-align:center;margin-bottom:24px">Market &nbsp;/&nbsp; Business &nbsp;/&nbsp; Product &nbsp;/&nbsp; MVP</div>
+  <div style="width:100%;max-width:1700px">
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px">
+      <div class="step-card" style="padding:30px 24px"><div class="step-num">DOC 01</div><div style="font-size:34px;font-weight:700;margin-top:12px">MRD</div><div class="body-m mt-m">市场需求<br><strong>用户要什么</strong></div></div>
+      <div class="step-card" style="padding:30px 24px"><div class="step-num">DOC 02</div><div style="font-size:34px;font-weight:700;margin-top:12px">BRD</div><div class="body-m mt-m">商业需求<br><strong>值不值得做</strong></div></div>
+      <div class="step-card" style="padding:30px 24px"><div class="step-num">DOC 03</div><div style="font-size:34px;font-weight:700;margin-top:12px">PRD</div><div class="body-m mt-m">产品需求<br><strong>具体做什么</strong></div></div>
+      <div class="step-card" style="padding:30px 24px;border-color:var(--text)"><div class="step-num" style="color:var(--accent)">DOC 04</div><div style="font-size:34px;font-weight:700;margin-top:12px">MVP</div><div class="body-m mt-m">第一版清单<br><strong>先做哪几件</strong></div></div>
+    </div>
+    <div class="card mt-l" style="padding:24px 36px;background:var(--bg-soft);border:none">
+      <div class="body-m" style="color:var(--text);text-align:center">四份文档 · 四个迭代 · <span class="hl">一个完整闭环</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>MRD · 市场需求文档</span></div>
+  <div class="top-title">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:18px;letter-spacing:3px;color:var(--text-meta);text-transform:uppercase;font-weight:600;margin-bottom:10px">Market Requirements Document</div>
+    MRD —— 用户到底要什么
+  </div>
+  <p class="body-l" style="max-width:1560px;text-align:center;color:var(--text-secondary);margin-top:20px">MRD <strong>只关注市场与用户</strong>，暂不涉及怎么做、能否盈利。一份 MRD 通常包含 <strong>4 块</strong>：</p>
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:24px;width:100%;max-width:1500px;margin-top:24px">
+    <div class="step-card"><div class="step-num">Block 01</div><div class="step-title" style="font-size:42px">数据质量评估</div><div class="step-desc">先说清这批数据<strong>能分析什么、不能分析什么</strong>。后续结论才不会失真。</div></div>
+    <div class="step-card"><div class="step-num">Block 02</div><div class="step-title" style="font-size:42px">痛点聚类</div><div class="step-desc">从几千条评论归纳出 <strong>3-5 个主要方向</strong>，每类配真实原声佐证。</div></div>
+    <div class="step-card"><div class="step-num">Block 03</div><div class="step-title" style="font-size:42px">需求优先级</div><div class="step-desc"><strong>P0 / P1 / P2</strong> 标注，按频率、情绪强度、是否影响留存判断。</div></div>
+    <div class="step-card"><div class="step-num">Block 04</div><div class="step-title" style="font-size:42px">竞品格局</div><div class="step-desc">用户在抱怨现有方案<strong>哪里不好</strong>，我们的机会窗口在哪。</div></div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>示例</span></div>
+  <div class="top-title">MRD 示例 · 减脂健身 App</div>
+  <div style="width:100%;max-width:1560px">
+    <p class="body-l" style="color:var(--text-secondary);margin-bottom:20px">爬取数千条 Keep、薄荷健康的真实评论后，<strong>可能聚出三类痛点</strong>：</p>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:20px">
+      <div class="card" style="padding:38px 36px;border-color:var(--text)"><div class="card-label" style="color:var(--accent)">P0 必须做</div><div style="font-size:36px;font-weight:700;margin:14px 0 10px">坚持不下来</div><div class="body-m">评论最多 · 情绪最强 · 直接影响留存</div></div>
+      <div class="card" style="padding:38px 36px"><div class="card-label">P1 很想要</div><div style="font-size:36px;font-weight:700;margin:14px 0 10px">不知道该吃什么</div><div class="body-m">很想要但非必需</div></div>
+      <div class="card" style="padding:38px 36px"><div class="card-label">P2 锦上添花</div><div style="font-size:36px;font-weight:700;margin:14px 0 10px">在家练怕动作不标准</div><div class="body-m">提及较少</div></div>
+    </div>
+    <div class="card mt-l" style="padding:36px 44px;background:var(--bg-soft);border:none">
+      <div class="card-label">竞品格局 · Keep</div>
+      <div class="body-l mt-m" style="color:var(--text)"><strong>"跟练"做得很好</strong>，但用户抱怨"什么都要会员""课程太多挑花眼"。</div>
+      <div class="body-l mt-m">机会窗口 → <span class="hl">轻、不挑花眼、专注帮用户坚持</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>BRD · 商业需求文档</span></div>
+  <div class="top-title">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:18px;letter-spacing:3px;color:var(--text-meta);text-transform:uppercase;font-weight:600;margin-bottom:10px">Business Requirements Document</div>
+    BRD —— 这事值不值得做
+  </div>
+  <p class="body-l" style="max-width:1560px;text-align:center;color:var(--text-secondary);margin-top:20px"><strong>有需求不等于值得做</strong>。BRD 负责<strong>算账与决策</strong>，通常包含 <strong>4 块</strong>：</p>
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:24px;width:100%;max-width:1500px;margin-top:24px">
+    <div class="step-card"><div class="step-num">Block 01</div><div class="step-title" style="font-size:42px">继承 MRD</div><div class="step-desc">直接读取 MRD 的市场结论往下接，<strong>不重复分析、不重复提问</strong>。</div></div>
+    <div class="step-card"><div class="step-num">Block 02</div><div class="step-title" style="font-size:42px">商业可行性</div><div class="step-desc">谁付费 · 怎么定价 · 成本结构 · 最小闭环（粗算单位经济）。</div></div>
+    <div class="step-card"><div class="step-num">Block 03</div><div class="step-title" style="font-size:42px">明确结论</div><div class="step-desc"><strong>值得做 / 有条件地做 / 建议暂缓</strong> 三选一，必须明确表态，不和稀泥。</div></div>
+    <div class="step-card"><div class="step-num">Block 04</div><div class="step-title" style="font-size:42px">关键风险</div><div class="step-desc">列出依赖的关键假设，指出<strong>哪个一旦不成立结论就翻转</strong>。</div></div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>示例</span></div>
+  <div class="top-title">BRD 示例 · 共享充电宝</div>
+  <div style="width:100%;max-width:1560px">
+    <p class="body-l" style="color:var(--text-secondary);margin-bottom:20px">付费者 = 临时手机没电又离不开手机的人；定价如每小时三元；成本含机柜、商家分成、运维补货。<strong>这门生意成立与否，卡在"单台日均借用次数"这个数字上</strong>：</p>
+    <div class="card" style="padding:42px 52px">
+      <div class="card-label">单台测算</div>
+      <div class="body-l mt-m" style="color:var(--text)">平均每次借用收 <strong>5 元</strong>，每天借 <strong>8 次 = 40 元</strong>，扣除分成与折旧 → 约数月回本。</div>
+      <div class="body-l mt-m">但若每天仅借 <strong>2 次</strong> → <span style="color:var(--warn);font-weight:600">永远无法回本</span>。</div>
+    </div>
+    <div class="two-col mt-l">
+      <div class="card" style="padding:36px 44px;border-color:var(--text)">
+        <div class="card-label" style="color:var(--accent)">明确结论</div>
+        <div style="font-size:32px;font-weight:600;margin-top:14px;line-height:1.4">值得做，<span class="hl">但有条件</span>：仅在<strong>日均借用高于阈值</strong>的点位铺设。</div>
+      </div>
+      <div class="card" style="padding:36px 44px">
+        <div class="card-label">关键风险</div>
+        <div class="body-m mt-m" style="color:var(--text-secondary)">电池续航普遍提升、用户自带充电宝增多 → 整体借用率下滑，<strong>根基便动摇</strong>。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>PRD · 产品需求文档</span></div>
+  <div class="top-title">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:18px;letter-spacing:3px;color:var(--text-meta);text-transform:uppercase;font-weight:600;margin-bottom:10px">Product Requirements Document</div>
+    PRD —— 具体做什么、怎么做
+  </div>
+  <p class="body-l" style="max-width:1560px;text-align:center;color:var(--text-secondary);margin-top:20px">方向确定、值得做之后，<strong>才进入产品本身</strong>。PRD 要细到<strong>能直接交给 AI 编码</strong>，通常包含 <strong>4 块</strong>：</p>
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:24px;width:100%;max-width:1500px;margin-top:24px">
+    <div class="step-card"><div class="step-num">Block 01</div><div class="step-title" style="font-size:42px">继承 BRD</div><div class="step-desc">读取 BRD 的商业判断与 P0/P1 功能列表往下接。</div></div>
+    <div class="step-card"><div class="step-num">Block 02</div><div class="step-title" style="font-size:42px">MVP 范围</div><div class="step-desc">V1 最多 <strong>3 个核心功能</strong>；附"不做清单"，且<strong>不做清单比要做的更长更显眼</strong>。</div></div>
+    <div class="step-card"><div class="step-num">Block 03</div><div class="step-title" style="font-size:42px">页面 & 组件</div><div class="step-desc">每页有什么、每个组件做什么（交互、状态、边界），写到<strong>可直接执行</strong>。</div></div>
+    <div class="step-card"><div class="step-num">Block 04</div><div class="step-title" style="font-size:42px">设计交接</div><div class="step-desc">产品调性、色彩方向、参考竞品，供设计与开发使用。</div></div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>示例</span></div>
+  <div class="top-title">PRD 示例 · 待办清单 App</div>
+  <div style="width:100%;max-width:1560px">
+    <p class="body-l" style="color:var(--text-secondary);margin-bottom:20px">这类产品<strong>最易陷入"什么都想加"</strong>。PRD 会把第一版收敛为三件事，并写一份更长的"不做清单"：</p>
+    <div class="two-col">
+      <div class="card" style="padding:42px 48px;border-color:var(--text)">
+        <div class="card-label" style="color:var(--accent)">要做 · 三件事</div>
+        <ul class="bullet-list mt-m"><li>新增任务</li><li>标记完成</li><li>删除任务</li></ul>
+      </div>
+      <div class="card" style="padding:42px 48px">
+        <div class="card-label">不做清单（更长更显眼）</div>
+        <ul class="bullet-list mt-m" style="font-size:24px"><li>不做提醒</li><li>不做多人协作</li><li>不做标签</li><li>不做日历</li><li>不做云同步</li><li>不做撤销</li></ul>
+      </div>
+    </div>
+    <div class="card mt-l" style="padding:32px 44px;background:var(--bg-soft);border:none">
+      <div class="card-label">组件示例 · 任务行</div>
+      <div class="body-m mt-m" style="color:var(--text)">左侧<strong>空心圆圈</strong>点击后变打勾、文字加删除线置灰；列表为空显示<strong>引导文案</strong>而非白屏；右侧删除按钮直接删除（本版不做撤销）。</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>串行 vs 一次生成</span></div>
+  <div class="top-title">为什么三份文档要串行</div>
+  <div style="display:inline-block">
+    <div class="formula" style="font-size:60px">看市场 → 决定做不做 → <span class="hl">才定怎么做</span></div>
+  </div>
+  <div class="three-col mt-xl" style="max-width:1620px">
+    <div class="card" style="padding:36px 40px"><div class="card-label">判断点清晰</div><div class="body-m mt-m">MRD 让你看清市场，BRD 让你决定做不做，PRD 才开始定怎么做。跳过任何一步都可能整体跑偏。</div></div>
+    <div class="card" style="padding:36px 40px"><div class="card-label">接力棒交接</div><div class="body-m mt-m">每份文档末尾有结构化<strong>交接区</strong>，下一份自动读取，不重复提问、不丢信息。</div></div>
+    <div class="card" style="padding:36px 40px;border-color:var(--text)"><div class="card-label" style="color:var(--accent)">人始终拍板</div><div class="body-m mt-m">AI 干执行（爬数据、做分析、写文档、写代码）；<strong>判断永远由人来定</strong>。</div></div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="slide-header"><span>Chapter 03</span><span>Three Layers</span></div>
+  <div class="chapter-watermark">03</div>
+  <div class="chapter">
+    <span class="num">Chapter 03</span>
+    <h2 class="title">先搞懂<br>三个词</h2>
+    <div class="sub">前端 · 后端 · 数据库——经典三层结构。</div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>前端 = 餐厅大堂</span></div>
+  <div class="top-title">前端 —— 运行在用户浏览器里的代码</div>
+  <div style="width:100%;max-width:1560px">
+    <div class="card" style="padding:42px 52px">
+      <div class="card-label">职责</div>
+      <div class="body-xl mt-m" style="color:var(--text)">把界面画出来（渲染 UI）· 响应点击和输入 · 把请求发给后端。</div>
+    </div>
+    <div class="two-col mt-l">
+      <div class="card" style="padding:38px 44px;background:var(--bg-soft);border:none">
+        <div class="card-label">餐厅比喻</div>
+        <div style="font-size:36px;font-weight:700;margin-top:14px">大堂</div>
+        <div class="body-m mt-m">桌椅、菜单、点菜的地方——客人看得见的那部分。<br>本项目里 = 登录页、聊天界面、记忆档案页。</div>
+      </div>
+      <div class="card" style="padding:38px 44px;border-color:var(--text)">
+        <div class="card-label" style="color:var(--accent)">技术栈</div>
+        <div style="font-size:36px;font-weight:700;margin-top:14px">React + Tailwind + <span class="hl">Next.js</span></div>
+        <div class="body-m mt-m">React 写界面、Tailwind 调样式，整个项目跑在 Next.js 框架上。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>后端 = 餐厅后厨</span></div>
+  <div class="top-title">后端 —— 运行在服务器上的代码</div>
+  <div style="width:100%;max-width:1560px">
+    <div class="card" style="padding:42px 52px">
+      <div class="card-label">职责</div>
+      <div class="body-xl mt-m" style="color:var(--text)">业务逻辑 · 身份验证 · 调用第三方服务（大模型 API）· 读写数据库。前后端靠<strong>接口（API）</strong>通信。</div>
+    </div>
+    <div class="two-col mt-l">
+      <div class="card" style="padding:36px 44px;background:var(--bg-soft);border:none">
+        <div class="card-label">餐厅比喻</div>
+        <div style="font-size:34px;font-weight:700;margin-top:14px">后厨</div>
+        <div class="body-m mt-m">客人看不到、活儿都在这儿干。你发一句话 → 后端拼"人设+记忆" → 送给大模型 → 拿回复传回前端。</div>
+      </div>
+      <div class="card" style="padding:36px 44px;border-color:var(--warn)">
+        <div class="card-label" style="color:var(--warn)">为什么必须有</div>
+        <div class="body-m mt-m" style="color:var(--text)"><strong style="color:var(--warn)">大模型密钥只能放服务器端</strong>，绝不能写进前端——前端代码用户能看到，等于把钥匙挂门口。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>数据库 = 仓库冰箱</span></div>
+  <div class="top-title">数据库 —— 数据的持久化存储</div>
+  <div style="width:100%;max-width:1560px">
+    <div class="card" style="padding:42px 52px">
+      <div class="card-label">职责</div>
+      <div class="body-xl mt-m" style="color:var(--text)">不存进去，内存里的东西一刷新就没了。<strong>关系型数据库</strong>按"表"存：一行一条记录、一列一个字段，用 <strong>SQL</strong> 增删改查。</div>
+    </div>
+    <div class="two-col mt-l">
+      <div class="card" style="padding:36px 44px;background:var(--bg-soft);border:none">
+        <div class="card-label">餐厅比喻</div>
+        <div style="font-size:34px;font-weight:700;margin-top:14px">仓库和冰箱</div>
+        <div class="body-m mt-m">食材、账本存这儿，关了门也不丢。本项目里 = 账号、聊天记录、长期记忆。</div>
+      </div>
+      <div class="card" style="padding:36px 44px;border-color:var(--text)">
+        <div class="card-label" style="color:var(--accent)">技术栈</div>
+        <div style="font-size:34px;font-weight:700;margin-top:14px"><span class="hl">Supabase</span>（底层 PostgreSQL）</div>
+        <div class="body-m mt-m">业界主流的关系型数据库，<strong>顺手把登录注册</strong>也一起做了。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>一次完整交互</span></div>
+  <div class="top-title">三层结构 · 一次完整交互</div>
+  <div style="width:100%;max-width:1700px">
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;align-items:stretch">
+      <div class="card" style="padding:26px 20px;text-align:center"><div class="card-label">前端</div><div style="font-size:24px;font-weight:700;margin-top:10px">点一下</div></div>
+      <div class="card" style="padding:26px 20px;text-align:center;background:var(--bg-soft);border:none"><div class="card-label">API</div><div style="font-size:24px;font-weight:700;margin-top:10px">请求 →</div></div>
+      <div class="card" style="padding:26px 20px;text-align:center;border-color:var(--text)"><div class="card-label" style="color:var(--accent)">后端</div><div style="font-size:24px;font-weight:700;margin-top:10px">处理</div></div>
+      <div class="card" style="padding:26px 20px;text-align:center"><div class="card-label">数据库</div><div style="font-size:24px;font-weight:700;margin-top:10px">读/写</div></div>
+      <div class="card" style="padding:26px 20px;text-align:center"><div class="card-label">前端</div><div style="font-size:24px;font-weight:700;margin-top:10px">渲染</div></div>
+    </div>
+    <div class="card mt-xl" style="padding:36px 48px">
+      <div class="card-label">最后一步</div>
+      <div class="body-l mt-m" style="color:var(--text)">用 <strong>Vercel</strong> 把整个产品部署到网上，别人就能通过网址打开。</div>
+    </div>
+    <p class="body-m mt-l" style="color:var(--text-meta);text-align:center">具体框架、版本以第 5 步"技术选型"联网确认的为准——这里先把概念和它们怎么配合搞清楚。</p>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="slide-header"><span>End of Lecture</span><span>Let's Build</span></div>
+  <h2 class="display h-m" style="max-width:1500px">
+    方法论讲完<br>接下来 · <span class="hl">跟我实操</span>
+  </h2>
+  <p class="body-xl mt-xl" style="max-width:1500px">
+    爬真实评论 → 三份文档 → 技术选型 → 开发跑起来 → 推送上线。<br>
+    <strong>一个人，两周，一个真正能发给别人用的产品。</strong>
+  </p>
+  <p style="position:absolute;bottom:110px;left:290px;font-size:22px;letter-spacing:2px;color:var(--text-secondary);font-weight:500">产品开发全流程 · 前期方法论 · 完</p>
+</section>
+
+<!-- ⬆️ slide 结束 ⬆️ -->
+
+<!-- 修订 al：controls 移进 stage，position:absolute 跟随 stage scale -->
+<div class="controls">
+  <button id="prev">‹</button>
+  <div class="counter"><span id="current">1</span> / <span id="total">1</span></div>
+  <button id="next">›</button>
+</div>
+
+</div>
+
+<script>
+// 舞台等比缩放
+function scaleStage() {
+  const stage = document.getElementById('stage');
+  const scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+  stage.style.setProperty('--scale', scale);
+}
+window.addEventListener('resize', scaleStage);
+scaleStage();
+
+const slides = document.querySelectorAll('.slide');
+const tocItems = document.querySelectorAll('.toc-item');
+const total = slides.length;
+let current = 0;
+document.getElementById('total').textContent = total;
+
+// 交互动画 iframe：切到该页才开始播放（修订 aa）——
+// 初始化时把 src 收进 data-src，进页装载（动画从头播）、离页卸载（归零 + 省资源）
+slides.forEach((s) => s.querySelectorAll('iframe[src]').forEach((f) => {
+  f.dataset.src = f.getAttribute('src');
+  f.removeAttribute('src');
+}));
+function syncFrames() {
+  slides.forEach((s, i) => s.querySelectorAll('iframe[data-src]').forEach((f) => {
+    if (i === current) { if (!f.getAttribute('src')) f.setAttribute('src', f.dataset.src); }
+    else if (f.getAttribute('src')) f.removeAttribute('src');
+  }));
+}
+
+function show(idx) {
+  const prev = current;
+  current = Math.max(0, Math.min(total - 1, idx));
+  // 方向感知水平推移
+  const dir = current >= prev ? 1 : -1;
+  slides[prev].style.setProperty('--dx', (-dir * 24) + 'px');
+  slides[current].style.setProperty('--dx', (dir * 24) + 'px');
+  void slides[current].offsetWidth;
+  slides.forEach((s, i) => s.classList.toggle('active', i === current));
+  syncFrames();
+  // 目录树高亮：当前页若无独立条目，归属的上一条目常亮（修订 w）
+  let best = -1;
+  tocItems.forEach((a) => { const v = +a.dataset.idx; if (v <= current && v > best) best = v; });
+  tocItems.forEach((a) => a.classList.toggle('active', +a.dataset.idx === best));
+  // 修订 aj/ak：目录条目总高度超过侧栏 (typical 1480px > 952px) 时，必须把 active 滚到可见区。
+  // 但绝不能用 scrollIntoView——即使 .stage 是 overflow:hidden，scrollIntoView 仍会逐层向祖先
+  // 冒泡设置 scrollTop（hidden 只裁切视觉、不阻止编程式滚动），结果把整个舞台连同左上 logo / 右
+  // 上读数一起推上去 ~100px。改成 toc.scrollTo——只影响 toc 自己，不冒泡。
+  const activeEl = document.querySelector('.toc-item.active');
+  const tocEl = document.querySelector('.toc');
+  if (activeEl && tocEl) {
+    const target = activeEl.offsetTop - tocEl.clientHeight / 2 + activeEl.clientHeight / 2;
+    tocEl.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+  }
+  document.getElementById('current').textContent = current + 1;
+  document.getElementById('progress').style.width = ((current + 1) / total * 100) + '%';
+  document.getElementById('theta').textContent = ((current * 37 % 90) / 10 - 4.5).toFixed(1);
+}
+
+document.getElementById('next').addEventListener('click', (e) => { e.stopPropagation(); e.currentTarget.blur(); show(current + 1); });
+document.getElementById('prev').addEventListener('click', (e) => { e.stopPropagation(); e.currentTarget.blur(); show(current - 1); });
+// 目录树点击跳页
+tocItems.forEach((a) => a.addEventListener('click', () => show(+a.dataset.idx)));
+
+// iframe 键盘导航转发（修订 ab）：动画/交互页内按 ←/→ 时由 iframe postMessage 上报翻页。
+// 取代旧的 blur 抢焦点方案——抢焦点会打断 iframe 内的文本输入（交互工具页有输入框）。
+window.addEventListener('message', (e) => {
+  const k = e.data && e.data.deckNav;
+  if (k === 'ArrowRight' || k === 'PageDown') show(current + 1);
+  else if (k === 'ArrowLeft' || k === 'PageUp') show(current - 1);
+});
+
+document.addEventListener('keydown', (e) => {
+  // 修订 al：input/textarea/contenteditable 聚焦时不响应翻页键——否则在交互页输入框
+  // 里按 ←/→ 会翻页而不是移动光标（MDN a11y 标准做法 document.activeElement 检测）
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); show(current + 1); }
+  else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); show(current - 1); }
+  else if (e.key === 'Home') show(0);
+  else if (e.key === 'End') show(total - 1);
+});
+
+show(0);
+
+// ===== 右下实时读数：鼠标坐标 + fps =====
+const mxEl = document.getElementById('mx'), myEl = document.getElementById('my');
+document.addEventListener('mousemove', (e) => {
+  const r = document.getElementById('stage').getBoundingClientRect();
+  const sc = r.width / 1920;
+  const x = Math.max(0, Math.min(1920, Math.round((e.clientX - r.left) / sc)));
+  const y = Math.max(0, Math.min(1080, Math.round((e.clientY - r.top) / sc)));
+  mxEl.textContent = String(x).padStart(4, '0');
+  myEl.textContent = String(y).padStart(4, '0');
+});
+const fpsEl = document.getElementById('fps');
+let fpsLast = performance.now(), fpsFrames = 0;
+(function fpsLoop(now) {
+  requestAnimationFrame(fpsLoop);
+  fpsFrames++;
+  if (now - fpsLast >= 500) {
+    fpsEl.textContent = Math.round(fpsFrames * 1000 / (now - fpsLast));
+    fpsFrames = 0; fpsLast = now;
+  }
+})(performance.now());
+
+// ===== 章节页裁切标记 =====
+slides.forEach((slide) => {
+  const ch = slide.querySelector('.chapter');
+  if (!ch) return;
+  const crop = document.createElement('div');
+  crop.className = 'crop';
+  crop.innerHTML = '<i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i>';
+  ch.appendChild(crop);
+});
+
+// ===== 封面副标题打字机（循环：打完停顿 → 回删 → 重打） =====
+(function typer() {
+  const el = slides[0] && slides[0].querySelector('.body-xl');
+  if (!el) return;
+  const txt = el.textContent.trim();
+  el.textContent = '';
+  const tn = document.createTextNode('');
+  const cur = document.createElement('span');
+  cur.className = 'cursor';
+  el.append(tn, cur);
+  let i = 0, mode = 'type';
+  function tick() {
+    if (mode === 'type') {
+      tn.textContent = txt.slice(0, ++i);
+      if (i >= txt.length) { mode = 'erase'; setTimeout(tick, 2600); return; }
+      setTimeout(tick, 65);
+    } else {
+      tn.textContent = txt.slice(0, --i);
+      if (i <= 0) { mode = 'type'; setTimeout(tick, 900); return; }
+      setTimeout(tick, 28);
+    }
+  }
+  setTimeout(tick, 400);
+})();
+
+// ===== 步骤渐显交互（十步流水线页）=====
+// 在 keydown 捕获阶段拦截 →/← —— 当前活动页是含 [data-step-reveal] 的页时：
+// 没全部点亮前，→ 点亮下一个、← 收回上一个；全部点亮后再按 → 才走骨架翻页。
+// useCapture:true 让本 handler 先于骨架的 keydown 跑，stopImmediatePropagation 阻止骨架 handler。
+(function stepReveal() {
+  document.addEventListener('keydown', (e) => {
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    const active = document.querySelector('.slide.active');
+    if (!active) return;
+    const container = active.querySelector('[data-step-reveal]');
+    if (!container) return;
+    const steps = container.querySelectorAll('.reveal-step');
+    const finals = container.querySelectorAll('.reveal-final');
+    const counter = container.querySelector('.reveal-counter');
+    const hint = container.querySelector('.reveal-hint');
+    const shown = container.querySelectorAll('.reveal-step.shown').length;
+    const total = steps.length;
+    const updateCounter = (n) => {
+      if (counter) counter.textContent = n;
+      if (hint) hint.classList.toggle('done', n >= total);
+    };
+
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') {
+      if (shown < total) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        steps[shown].classList.add('shown');
+        // 最后一格点亮的同时把页脚副标题也淡入
+        if (shown + 1 >= total) finals.forEach((f) => f.classList.add('shown'));
+        updateCounter(shown + 1);
+      }
+      // 全部点亮后不拦截，骨架接管 → 翻下一页
+    } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+      if (shown > 0) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        steps[shown - 1].classList.remove('shown');
+        finals.forEach((f) => f.classList.remove('shown'));
+        updateCounter(shown - 1);
+      }
+      // 全部收回后不拦截，骨架接管 ← 翻回前一页
+    }
+  }, true);
+
+  // 离开本页或重新进入时重置（监听 active 类变化）
+  const observer = new MutationObserver(() => {
+    document.querySelectorAll('[data-step-reveal]').forEach((c) => {
+      // 只重置「非当前活动页」的渐显容器
+      if (!c.closest('.slide.active')) {
+        c.querySelectorAll('.reveal-step.shown').forEach((s) => s.classList.remove('shown'));
+        c.querySelectorAll('.reveal-final.shown').forEach((s) => s.classList.remove('shown'));
+        const counter = c.querySelector('.reveal-counter');
+        if (counter) counter.textContent = '0';
+        const hint = c.querySelector('.reveal-hint');
+        if (hint) hint.classList.remove('done');
+      }
+    });
+  });
+  document.querySelectorAll('.slide').forEach((s) => observer.observe(s, { attributes: true, attributeFilter: ['class'] }));
+})();
+</script>
+
+</body>
+</html>

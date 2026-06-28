@@ -1,0 +1,1923 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 产品从 0 到 1 · Claude Code 操作指南</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --bg: #ffffff;
+  --bg-soft: #f7f7f8;
+  --border: #e6e6e6;
+  --grid: rgba(17,17,17,0.035);
+  --text: #111111;
+  --text-secondary: #6b7280;
+  --text-meta: #b3b3b3;
+  --text-faint: #f0f0f2;
+  --accent: #00e75e;
+  --warn: #d93025;
+  /* 侧边栏宽 = 4 个网格单元（64×4），右边框正好落在画布网格线上 */
+  --sidebar-w: 256px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  font-family: 'Inter', 'Noto Sans SC', 'PingFang SC', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  color: var(--text);
+}
+
+/* ===== 固定舞台：1920×1080 等比缩放 ===== */
+.stage {
+  position: fixed;
+  top: 50%; left: 50%;
+  width: 1920px; height: 1080px;
+  transform: translate(-50%, -50%) scale(var(--scale, 1));
+  transform-origin: center center;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+/* 画布网格：64px 细网格线 */
+.stage::before {
+  content: '';
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
+  background-size: 64px 64px;
+  z-index: 0;
+}
+/* 网格交点十字标记 */
+.stage::after {
+  content: '';
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='256' height='256'%3E%3Cpath d='M128 121v14M121 128h14' stroke='%23111111' stroke-opacity='0.14' stroke-width='1'/%3E%3C/svg%3E");
+  background-size: 256px 256px;
+  z-index: 0;
+}
+
+/* 右缘斜纹装饰条（左缘被侧边栏占据） */
+.frame.right {
+  position: absolute; top: 0; bottom: 0; right: 0;
+  width: 18px;
+  background: repeating-linear-gradient(45deg, rgba(17,17,17,0.05) 0 1px, transparent 1px 7px);
+  border-left: 1px solid var(--border);
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* ===== 左侧侧边栏：logo + 目录树 =====
+   完全无线（用户裁定）：无横向分割线、无右侧竖边框；白底静默覆盖网格，分区只靠留白 */
+.sidebar {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: var(--sidebar-w);
+  background: var(--bg);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+}
+/* logo 区：高 128px（logo 中心与右侧页眉行同高），无下边线 */
+.sidebar .brand {
+  height: 128px;
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  flex-shrink: 0;
+}
+.sidebar .brand svg { display: block; height: 42px; width: auto; }
+
+.toc {
+  flex: 1;
+  padding: 6px 12px 18px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;          /* 修订 w：目录列满每页时可滚动 */
+  scrollbar-width: none;
+}
+.toc::-webkit-scrollbar { display: none; }
+.toc-item {
+  /* 修订 aj：目录项的「文字垂直居中」需要解决三个独立 bug——
+     ① flex-shrink:0：.toc 是 flex column，目录项超出容器时会被等比压缩到 ~23px，line-height 形同虚设
+     ② line-height:1.65：1.4 (21px) 不够 Inter 字体 g/j/p/q/y 的 descender，会被 overflow:hidden 切掉
+        （肉眼现象：「Vibe Coding」最后的 g 看起来像 a）
+     ③ padding 9/5 不对称：Inter baseline 偏低 + CJK em-box 视觉重心比 Latin cap-height 低，
+        混排时即使 padding 对称文字也偏上 ~2px——补偿成顶 9 / 底 5，视觉上才居中 */
+  flex-shrink: 0;
+  display: block;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+  padding: 9px 14px 5px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.toc-item:hover { background: var(--bg-soft); color: var(--text); }
+/* 章节节点：mono 小标签 */
+.toc-item.ch {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-meta);
+  margin-top: 14px;
+}
+.toc-item.ch:hover { color: var(--text); }
+/* 子页：缩进 */
+.toc-item.sub { padding-left: 30px; }
+/* 当前页：黑色胶囊（与章节胶囊同语言） */
+.toc-item.active { background: var(--text); color: #fff; }
+.toc-item.ch.active { background: var(--text); color: #fff; }
+
+/* ===== 右下角实时读数 ===== */
+.corner-meta {
+  position: absolute;
+  bottom: 36px; right: 60px;   /* 修订 y：读数外挪，给内容让位并与外扩对齐线呼应 */
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  letter-spacing: 1px;
+  color: var(--text-meta);
+  z-index: 3;
+  pointer-events: none;
+}
+
+/* ===== 翻页过渡：方向感知水平推移 =====
+   对齐纪律：内容对齐线 384px（64×6 网格线）；标题固定基线 190px */
+.slide {
+  position: absolute; inset: 0;
+  padding: 190px 120px 110px 384px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: flex-start;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(var(--dx, 24px));
+  transition: opacity 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+              visibility 0s linear 0.4s;
+  z-index: 1;
+}
+.slide.active {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition: opacity 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+              visibility 0s;
+  z-index: 1;
+}
+
+/* ===== 文字层级 ===== */
+.display { font-weight: 700; letter-spacing: -0.02em; color: var(--text); }
+.mono { font-family: 'JetBrains Mono', monospace; }
+
+.h-xxl { font-size: 140px; line-height: 1.05; }
+.h-l   { font-size: 92px;  line-height: 1.1; }
+.h-m   { font-size: 68px;  line-height: 1.18; }
+
+.body-xl { font-size: 39px; line-height: 1.55; color: var(--text-secondary); font-weight: 400; }
+.body-l  { font-size: 32px; line-height: 1.6;  color: var(--text-secondary); font-weight: 400; }
+.body-m  { font-size: 26px; line-height: 1.65; color: var(--text-secondary); font-weight: 400; }
+.body-xl strong, .body-l strong, .body-m strong { color: var(--text); font-weight: 600; }
+
+.eyebrow {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 18px; font-weight: 600;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 36px;
+}
+
+.hl { color: var(--accent); font-weight: 700; }
+
+/* ===== 页眉：悬浮在画布上，垂直中心与侧边栏 logo 同高（y=64） ===== */
+.slide-header {
+  position: absolute;
+  top: 0; height: 128px; left: 384px; right: 120px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 15px;
+  letter-spacing: 1.5px;
+  color: var(--text-meta);
+  text-transform: uppercase;
+  font-weight: 500;
+  pointer-events: none;
+}
+
+/* ===== 章节页 ===== */
+.chapter {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: flex-start;
+  position: relative;
+  z-index: 1;
+}
+.chapter .num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 18px; font-weight: 600;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--text);
+  padding: 12px 24px;
+  border-radius: 100px;
+  margin-bottom: 48px;
+}
+.chapter .title { font-size: 130px; line-height: 1.05; font-weight: 700; letter-spacing: -0.02em; }
+.chapter .sub {
+  font-size: 38px;
+  color: var(--text-secondary);
+  margin-top: 36px;
+  font-weight: 400;
+}
+/* 章节页大数字水印：右缘对齐内容网格，底边在元数据带之上 */
+.chapter-watermark {
+  position: absolute;
+  right: 120px; bottom: 96px;
+  font-size: 520px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: var(--text-faint);
+  pointer-events: none;
+  user-select: none;
+  z-index: 0;
+}
+
+/* ===== 卡片 ===== */
+.card {
+  background: var(--bg);
+  border: 1.5px solid var(--border);
+  border-radius: 20px;
+  padding: 52px 56px;
+}
+.card.soft { background: var(--bg-soft); border: none; }
+.card-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 16px; font-weight: 600;
+  letter-spacing: 2.5px;
+  text-transform: uppercase;
+  color: var(--text-meta);
+  margin-bottom: 22px;
+}
+
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; width: 100%; }
+.three-col { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; width: 100%; }
+
+/* ===== 列表 ===== */
+.bullet-list { list-style: none; margin-top: 16px; }
+.bullet-list li {
+  font-size: 32px; line-height: 1.6;
+  color: var(--text-secondary);
+  padding: 16px 0 16px 40px;
+  position: relative;
+}
+.bullet-list li::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 37px;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--text);
+}
+.bullet-list li strong { color: var(--text); font-weight: 600; }
+
+/* ===== 右侧锚点 ===== */
+.side-anchor {
+  position: absolute;
+  right: 120px; top: 50%;
+  transform: translateY(-50%);
+  width: 480px;
+  z-index: 0;
+}
+.anchor-num {
+  font-size: 440px; font-weight: 700;
+  line-height: 0.9;
+  letter-spacing: -0.04em;
+  color: var(--text-faint);
+  text-align: right;
+  user-select: none;
+}
+.anchor-card {
+  background: var(--bg);
+  border: 1.5px solid var(--border);
+  border-radius: 24px;
+  padding: 48px 52px;
+}
+.anchor-card .k {
+  font-size: 48px; font-weight: 700; line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.anchor-card .k em { font-style: normal; color: var(--accent); }
+.anchor-card .v {
+  font-size: 23px; line-height: 1.6;
+  color: var(--text-secondary);
+  margin-top: 20px;
+}
+
+/* ===== 大数字页 ===== */
+.big-stat { text-align: left; }
+.big-stat .num {
+  font-size: 380px; font-weight: 700;
+  line-height: 0.95; letter-spacing: -0.04em;
+  color: var(--text);
+}
+.big-stat .num .unit { font-size: 100px; font-weight: 700; margin-left: 16px; color: var(--text-secondary); }
+.big-stat .label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 24px; letter-spacing: 4px;
+  text-transform: uppercase;
+  color: var(--text-meta);
+  margin-top: 40px; font-weight: 600;
+}
+
+/* ===== 步骤卡 ===== */
+.step-card {
+  background: var(--bg);
+  border: 1.5px solid var(--border);
+  border-radius: 20px;
+  padding: 44px 40px;
+}
+.step-card .step-num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 16px; font-weight: 600;
+  letter-spacing: 2.5px;
+  text-transform: uppercase;
+  color: var(--text-meta);
+}
+.step-card .step-title {
+  font-size: 60px; font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 18px 0 20px; line-height: 1.1;
+  color: var(--text);
+}
+.step-card .step-desc {
+  font-size: 24px; line-height: 1.65;
+  color: var(--text-secondary);
+}
+.step-card .step-desc strong { color: var(--text); font-weight: 600; }
+
+/* ===== 标签（词汇页） ===== */
+.tag-row { display: flex; gap: 16px; flex-wrap: wrap; }
+.tag {
+  font-size: 26px;
+  font-weight: 500;
+  padding: 18px 32px;
+  border-radius: 100px;
+  background: var(--bg);
+  border: 1.5px solid var(--border);
+  color: var(--text);
+  position: relative;
+  cursor: default;
+  transition: border-color 0.2s;
+}
+.tag:hover { border-color: var(--text); }
+.tag.accent { background: var(--text); border-color: var(--text); color: #fff; font-weight: 600; }
+.tag .tag-tooltip {
+  position: absolute;
+  bottom: calc(100% + 16px);
+  left: 50%;
+  transform: translateX(-50%) scale(0.96);
+  background: #1f1f1f;
+  color: #fff;
+  font-size: 20px; font-weight: 400; line-height: 1.55;
+  padding: 24px 28px;
+  border-radius: 16px;
+  width: 430px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1), transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 8px 30px rgba(0,0,0,0.18);
+  z-index: 100;
+  text-align: left;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.tag .tag-tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%; left: 50%;
+  transform: translateX(-50%);
+  border: 9px solid transparent;
+  border-top-color: #1f1f1f;
+}
+.tag:hover .tag-tooltip { opacity: 1; transform: translateX(-50%) scale(1); }
+.tag .tag-tooltip strong { color: #5ef0a0; font-weight: 600; }
+
+/* ===== 公式大字卡 ===== */
+.formula {
+  font-size: 88px; font-weight: 700;
+  letter-spacing: -0.02em;
+  text-align: left;
+  padding: 64px 72px;
+  background: var(--bg);
+  border: 1.5px solid var(--border);
+  border-radius: 24px;
+}
+
+/* ===== 议程行 ===== */
+.agenda-row {
+  display: flex; align-items: baseline; gap: 44px;
+  padding: 22px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.agenda-row:last-child { border-bottom: none; }
+.agenda-row .time {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 20px; font-weight: 600;
+  letter-spacing: 2px;
+  color: var(--text);
+  min-width: 120px;
+  text-transform: uppercase;
+}
+.agenda-row .name { font-size: 32px; font-weight: 600; color: var(--text); min-width: 340px; }
+.agenda-row .note { font-size: 24px; color: var(--text-secondary); }
+.agenda-row.dim .time, .agenda-row.dim .name { color: var(--text-meta); }
+
+/* ===== 翻页控件：悬浮胶囊 ===== */
+.controls {
+  /* 修订 al：原 position:fixed 不受 stage scale 影响——小窗口/投影非 16:9 时控件不缩放、视觉断裂。
+     改 position:absolute 并移进 stage（HTML 顺序在 .stage 末尾），自动跟随 stage scale。
+     注：祖先有 transform 时，子代 position:fixed 会退化为 absolute，干脆显式 absolute 避免混淆。 */
+  position: absolute;
+  bottom: 24px; left: 50%;
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 16px;
+  background: rgba(255,255,255,0.9);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  padding: 10px 20px;
+  border-radius: 100px;
+  color: var(--text-secondary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px; letter-spacing: 1px;
+  z-index: 100;
+  opacity: 0.35;
+  transition: opacity 0.3s;
+}
+.controls:hover { opacity: 1; }
+.controls button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 16px;
+  display: flex; align-items: center; justify-content: center;
+}
+.controls button:hover { background: var(--bg-soft); }
+.counter { min-width: 70px; text-align: center; font-weight: 500; }
+
+.progress {
+  position: fixed;
+  top: 0; left: 0;
+  height: 3px;
+  background: var(--text);
+  z-index: 101;
+  transition: width 0.3s;
+}
+
+/* ===== 打字机光标 ===== */
+.cursor {
+  display: inline-block;
+  width: 3px; height: 1.05em;
+  background: var(--text);
+  margin-left: 5px;
+  vertical-align: -0.12em;
+  animation: blink 1.1s steps(1) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ===== 章节页裁切标记 ===== */
+.crop { position: absolute; inset: -48px -64px; pointer-events: none; }
+.crop i { position: absolute; width: 22px; height: 22px; border: 0 solid rgba(17,17,17,0.4); }
+.crop i.tl { left: 0; top: 0; border-left-width: 1.5px; border-top-width: 1.5px; }
+.crop i.tr { right: 0; top: 0; border-right-width: 1.5px; border-top-width: 1.5px; }
+.crop i.bl { left: 0; bottom: 0; border-left-width: 1.5px; border-bottom-width: 1.5px; }
+.crop i.br { right: 0; bottom: 0; border-right-width: 1.5px; border-bottom-width: 1.5px; }
+
+/* ===== 内容页版式（修订 w/x，用户裁定）=====
+   标题顶部左对齐（占用原页眉带，该页页眉只留右侧主题词），
+   内容在标题下方区域纵横双向居中、优先放大；
+   封面/章节页仍走原版左对齐。视频/论文等自明页免标题（center mid）。 */
+.top-title {
+  position: absolute;
+  top: 44px; left: 290px; right: 60px;   /* 修订 y：对齐线外扩，与内容左右边缘对齐 */
+  text-align: left;
+  font-size: 52px; font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  z-index: 2;
+}
+.slide.center {
+  padding: 150px 60px 60px 290px;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+/* 内容页页眉与标题/内容共用同一套左右对齐线（290/60） */
+.slide.center .slide-header { left: 290px; right: 60px; }
+.slide.center.mid {
+  /* 修订 z：免标题页的居中基准区 = 页眉带下缘(128) ~ 读数带上方 × 侧边栏右缘 ~ 右缘 */
+  padding: 128px 60px 70px 290px;
+}
+
+/* ===== 工具类 ===== */
+.mt-xl { margin-top: 64px; }
+.mt-l { margin-top: 40px; }
+.mt-m { margin-top: 24px; }
+
+/* ===== 渐显步骤动效（十步流水线 / 四条原则 等）=====
+   初始整张卡片用 visibility:hidden 完全不渲染（border + 内容都不见），
+   按 → 时切到 visible 并叠加 fade + 上浮 + 缩放，整张卡有明确"弹出"感——
+   不是 opacity-only fade（那种只看到边框淡入、"边框在切换"的视觉错觉）。 */
+.reveal-step {
+  visibility: hidden;
+  opacity: 0;
+  transform: translateY(28px) scale(0.92);
+  transition: opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+              visibility 0s linear 0.45s;
+  pointer-events: none;
+}
+.reveal-step.shown {
+  visibility: visible;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  transition: opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+              visibility 0s;
+}
+.reveal-final { visibility: hidden; opacity: 0; transition: opacity 0.4s ease, visibility 0s linear 0.4s; }
+.reveal-final.shown { visibility: visible; opacity: 1; transition: opacity 0.4s ease, visibility 0s; }
+.reveal-hint { transition: opacity 0.3s ease; }
+.reveal-hint.done { opacity: 0; }
+
+/* ===== 居中页内卡片默认左对齐 =====
+   .slide.center 整页 text-align:center 让短标题/引导句居中，但卡片内多行文案
+   居中会"行尾参差不齐、阅读跳跃"。给所有 .step-card / .card 默认左对齐，
+   仍想居中的卡片（如对比页 5 列状态条）用 inline style="text-align:center" 覆盖。 */
+.slide.center .step-card,
+.slide.center .card { text-align: left; }
+
+/* ===== 提示词代码块的复制按钮 =====
+   悬浮在深色代码块右上角内侧，胶囊形，浅灰描边，hover 变实白。 */
+.prompt-box .copy-btn {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  z-index: 5;
+  background: rgba(255,255,255,0.08);
+  color: #e8eaed;
+  border: 1px solid rgba(255,255,255,0.2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  padding: 8px 18px;
+  border-radius: 100px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+.prompt-box .copy-btn:hover { background: #fff; color: #1f1f1f; border-color: #fff; }
+.prompt-box .copy-btn.done { background: var(--accent); color: #0a2a14; border-color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div class="progress" id="progress"></div>
+
+<div class="stage" id="stage">
+
+<div class="frame right"></div>
+
+<!-- 左侧侧边栏：logo + 目录树（栏内无任何横向分割线，无底部计数） -->
+<aside class="sidebar">
+  <div class="brand"><svg width="996" height="240" viewBox="0 0 996 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+<rect width="240" height="240" rx="53.6741" fill="url(#paint0_linear_2111_594)"/>
+<g filter="url(#filter0_d_2111_594)">
+<path d="M33.9443 121.086C33.9444 74.8756 69.7314 38.0762 116.52 38.0762C129.707 38.0762 146.945 41.5045 161.017 51.2321C163.188 52.7332 163.732 55.7104 162.231 57.8819C160.73 60.0534 157.752 60.5969 155.581 59.0958C143.517 50.7564 128.332 47.6358 116.52 47.6358C75.1183 47.6358 43.504 80.0473 43.504 121.086C43.504 160.085 75.5542 193.095 116.032 193.13C132.425 192.697 144.897 188.623 153.12 183.385C161.535 178.024 164.825 171.971 164.825 167.684C164.825 166.409 164.419 165.073 163.492 163.413C162.515 161.664 161.204 159.957 159.551 157.715C156.454 153.517 152.41 147.832 152.41 139.998C152.41 133.455 155.633 128.334 160.225 125.292C162.87 123.54 165.95 122.483 169.125 122.176C168.288 113.827 168.961 107.251 170.958 102.375C173.538 96.0751 178.441 92.546 184.33 92.546C188.791 92.5461 192.446 94.059 194.804 97.356C196.862 100.234 197.407 103.822 197.66 106.687C197.793 108.199 197.858 109.784 197.924 111.254C197.991 112.766 198.06 114.199 198.191 115.599C198.457 118.437 198.952 120.73 199.901 122.533C203.661 129.677 206.842 136.723 207.195 144.104C207.564 151.797 204.861 159.17 198.404 167.006C196.725 169.043 193.712 169.333 191.675 167.655C189.638 165.976 189.348 162.963 191.026 160.926C196.356 154.459 197.876 149.341 197.647 144.561C197.403 139.472 195.168 134.065 191.441 126.985C189.628 123.54 188.981 119.78 188.673 116.49C188.517 114.827 188.441 113.176 188.374 111.679C188.305 110.14 188.248 108.787 188.137 107.526C187.901 104.844 187.475 103.542 187.028 102.917C186.88 102.71 186.495 102.106 184.33 102.106C182.892 102.106 181.143 102.73 179.805 105.997C178.333 109.592 177.609 116.052 179.349 126.5C179.613 128.084 179.065 129.694 177.889 130.786C176.714 131.879 175.068 132.309 173.508 131.931C170.706 131.252 167.714 131.799 165.504 133.262C163.406 134.652 161.97 136.871 161.97 139.998C161.97 144.402 164.133 147.823 167.244 152.04C168.694 154.006 170.487 156.334 171.838 158.751C173.238 161.258 174.384 164.222 174.384 167.684C174.384 176.6 168.038 185.217 158.256 191.447C148.294 197.794 134.032 202.228 116.219 202.688C116.178 202.689 116.136 202.69 116.095 202.69C70.2735 202.69 33.9443 165.35 33.9443 121.086Z" fill="#EEEEEE"/>
+<path d="M181.655 51.092C182.419 48.7751 185.696 48.7751 186.46 51.092L187.729 54.9416C189.235 59.5129 192.821 63.0985 197.392 64.6051L201.242 65.8738C203.559 66.6374 203.559 69.9148 201.242 70.6784L197.392 71.9472C192.821 73.4537 189.235 77.0394 187.729 81.6107L186.46 85.4602C185.696 87.7771 182.419 87.7771 181.655 85.4602L180.387 81.6107C178.88 77.0394 175.294 73.4537 170.723 71.9472L166.874 70.6784C164.557 69.9148 164.557 66.6374 166.874 65.8738L170.723 64.6051C175.294 63.0985 178.88 59.5129 180.387 54.9416L181.655 51.092Z" fill="#00E75E"/>
+<ellipse cx="83.1687" cy="108.335" rx="10.7634" ry="17.3205" transform="rotate(2.46958 83.1687 108.335)" fill="#EEEEEE"/>
+<ellipse cx="125.316" cy="106.383" rx="11.5513" ry="18.5882" transform="rotate(2.46958 125.316 106.383)" fill="#EEEEEE"/>
+</g>
+<path d="M940.438 207.917C928.278 207.917 917.478 205.357 908.038 200.237C898.598 194.957 891.078 187.757 885.478 178.637C880.038 169.517 877.318 159.117 877.318 147.437C877.318 135.917 879.958 125.677 885.238 116.717C890.678 107.597 898.038 100.397 907.318 95.117C916.598 89.677 926.918 86.957 938.278 86.957C949.478 86.957 959.318 89.517 967.798 94.637C976.438 99.597 983.158 106.477 987.958 115.277C992.918 123.917 995.398 133.757 995.398 144.797C995.398 146.877 995.238 149.037 994.918 151.277C994.758 153.357 994.358 155.757 993.718 158.477L896.278 158.717V135.197L979.078 134.957L966.358 144.797C966.038 137.917 964.758 132.157 962.518 127.517C960.438 122.877 957.318 119.357 953.158 116.957C949.158 114.397 944.198 113.117 938.278 113.117C932.038 113.117 926.598 114.557 921.958 117.437C917.318 120.157 913.718 124.077 911.158 129.197C908.758 134.157 907.558 140.077 907.558 146.957C907.558 153.997 908.838 160.157 911.398 165.437C914.118 170.557 917.958 174.557 922.918 177.437C927.878 180.157 933.638 181.517 940.198 181.517C946.118 181.517 951.478 180.557 956.278 178.637C961.078 176.557 965.238 173.517 968.758 169.517L987.238 187.997C981.638 194.557 974.758 199.517 966.598 202.877C958.598 206.237 949.878 207.917 940.438 207.917Z" fill="#222222"/>
+<path d="M811.569 205.519V41.3594H843.009V205.519H811.569ZM784.449 117.199V89.5994H870.129V117.199H784.449Z" fill="#222222"/>
+<path d="M701.915 207.919C691.355 207.919 681.835 205.279 673.355 199.999C664.875 194.719 658.235 187.519 653.435 178.399C648.635 169.279 646.235 159.039 646.235 147.679C646.235 136.159 648.635 125.839 653.435 116.719C658.235 107.599 664.875 100.399 673.355 95.1192C681.835 89.8392 691.355 87.1992 701.915 87.1992C710.235 87.1992 717.675 88.8792 724.235 92.2392C730.795 95.5992 735.995 100.319 739.835 106.399C743.835 112.319 745.995 119.039 746.315 126.559V168.319C745.995 175.999 743.835 182.799 739.835 188.719C735.995 194.639 730.795 199.359 724.235 202.879C717.675 206.239 710.235 207.919 701.915 207.919ZM707.675 178.879C716.475 178.879 723.595 175.999 729.035 170.239C734.475 164.319 737.195 156.719 737.195 147.439C737.195 141.359 735.915 135.999 733.355 131.359C730.955 126.559 727.515 122.879 723.035 120.319C718.715 117.599 713.595 116.239 707.675 116.239C701.915 116.239 696.795 117.599 692.315 120.319C687.995 122.879 684.555 126.559 681.995 131.359C679.595 135.999 678.395 141.359 678.395 147.439C678.395 153.679 679.595 159.199 681.995 163.999C684.555 168.639 687.995 172.319 692.315 175.039C696.795 177.599 701.915 178.879 707.675 178.879ZM735.515 205.519V174.319L740.555 145.999L735.515 118.159V89.5992H766.715V205.519H735.515Z" fill="#222222"/>
+<path d="M596.67 205.519V139.039C596.67 132.159 594.51 126.559 590.19 122.239C585.87 117.919 580.27 115.759 573.39 115.759C568.91 115.759 564.91 116.719 561.39 118.639C557.87 120.559 555.07 123.279 552.99 126.799C551.07 130.319 550.11 134.399 550.11 139.039L537.87 132.799C537.87 123.679 539.79 115.759 543.63 109.039C547.63 102.159 553.07 96.7992 559.95 92.9592C566.99 89.1192 574.91 87.1992 583.71 87.1992C592.19 87.1992 599.79 89.3592 606.51 93.6792C613.23 97.8392 618.51 103.359 622.35 110.239C626.19 116.959 628.11 124.239 628.11 132.079V205.519H596.67ZM518.67 205.519V89.5992H550.11V205.519H518.67Z" fill="#222222"/>
+<path d="M461.904 205.519V139.039C461.904 132.159 459.744 126.559 455.424 122.239C451.104 117.919 445.504 115.759 438.624 115.759C434.144 115.759 430.144 116.719 426.624 118.639C423.104 120.559 420.304 123.279 418.224 126.799C416.304 130.319 415.344 134.399 415.344 139.039L403.104 132.799C403.104 123.679 405.024 115.759 408.864 109.039C412.864 102.159 418.304 96.7992 425.184 92.9592C432.224 89.1192 440.144 87.1992 448.944 87.1992C457.424 87.1992 465.024 89.3592 471.744 93.6792C478.464 97.8392 483.744 103.359 487.584 110.239C491.424 116.959 493.344 124.239 493.344 132.079V205.519H461.904ZM383.904 205.519V89.5992H415.344V205.519H383.904Z" fill="#222222"/>
+<path d="M320 205.517V36.7969H352.64V205.517H320Z" fill="#222222"/>
+<defs>
+<filter id="filter0_d_2111_594" x="24.7136" y="38.0762" width="191.746" height="183.077" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+<feFlood flood-opacity="0" result="BackgroundImageFix"/>
+<feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+<feOffset dy="9.23077"/>
+<feGaussianBlur stdDeviation="4.61538"/>
+<feComposite in2="hardAlpha" operator="out"/>
+<feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.2 0"/>
+<feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_2111_594"/>
+<feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_2111_594" result="shape"/>
+</filter>
+<linearGradient id="paint0_linear_2111_594" x1="120" y1="0" x2="120" y2="240" gradientUnits="userSpaceOnUse">
+<stop stop-color="#333333"/>
+<stop offset="1" stop-color="#181818"/>
+</linearGradient>
+</defs>
+</svg></div>
+  <nav class="toc">
+    <a class="toc-item ch" data-idx="0">封面</a>
+    <a class="toc-item ch" data-idx="1">CH00 时代背景</a>
+    <a class="toc-item sub" data-idx="2">公司平均人数下降</a>
+    <a class="toc-item sub" data-idx="3">案例：4 亿美元营收</a>
+    <a class="toc-item sub" data-idx="4">Sam Altman 的预测</a>
+    <a class="toc-item sub" data-idx="5">新玩法 vs 旧玩法</a>
+    <a class="toc-item ch" data-idx="6">CH01 底层逻辑</a>
+    <a class="toc-item sub" data-idx="7">四条核心原则</a>
+    <a class="toc-item ch" data-idx="8">CH02 三份文档</a>
+    <a class="toc-item sub" data-idx="9">MRD 是什么</a>
+    <a class="toc-item sub" data-idx="10">MRD 示例</a>
+    <a class="toc-item sub" data-idx="11">BRD 是什么</a>
+    <a class="toc-item sub" data-idx="12">BRD 示例</a>
+    <a class="toc-item sub" data-idx="13">PRD 是什么</a>
+    <a class="toc-item sub" data-idx="14">PRD 示例</a>
+    <a class="toc-item sub" data-idx="15">为什么要串行</a>
+    <a class="toc-item ch" data-idx="16">CH03 全流程总览</a>
+    <a class="toc-item sub" data-idx="17">五条节奏纪律</a>
+    <a class="toc-item sub" data-idx="18">十步流水线</a>
+    <a class="toc-item ch" data-idx="19">CH04 阶段一·调研</a>
+    <a class="toc-item sub" data-idx="20">第 0 步 初始化</a>
+    <a class="toc-item sub" data-idx="21">提示词原文</a>
+    <a class="toc-item sub" data-idx="22">第 1 步 装 Skills 调研</a>
+    <a class="toc-item sub" data-idx="23">三段提示词</a>
+    <a class="toc-item sub" data-idx="24">第 2 步 MRD</a>
+    <a class="toc-item sub" data-idx="25">提示词原文</a>
+    <a class="toc-item sub" data-idx="26">第 3 步 BRD</a>
+    <a class="toc-item sub" data-idx="27">提示词原文</a>
+    <a class="toc-item sub" data-idx="28">第 4 步 PRD</a>
+    <a class="toc-item sub" data-idx="29">提示词原文</a>
+    <a class="toc-item ch" data-idx="30">CH05 阶段二·准备</a>
+    <a class="toc-item sub" data-idx="31">前端 = 餐厅大堂</a>
+    <a class="toc-item sub" data-idx="32">后端 = 餐厅后厨</a>
+    <a class="toc-item sub" data-idx="33">数据库 = 仓库冰箱</a>
+    <a class="toc-item sub" data-idx="34">一次完整请求</a>
+    <a class="toc-item sub" data-idx="35">第 5 步 技术选型</a>
+    <a class="toc-item sub" data-idx="36">原文 + 可选补丁</a>
+    <a class="toc-item ch" data-idx="37">CH06 阶段三·开发</a>
+    <a class="toc-item sub" data-idx="38">第 6 步 开发 MVP</a>
+    <a class="toc-item sub" data-idx="39">提示词原文</a>
+    <a class="toc-item sub" data-idx="40">git 节奏</a>
+    <a class="toc-item sub" data-idx="41">第 7 步 本地验收</a>
+    <a class="toc-item sub" data-idx="42">提示词原文</a>
+    <a class="toc-item sub" data-idx="43">记忆系统三招演示</a>
+    <a class="toc-item ch" data-idx="44">CH07 阶段四·上线</a>
+    <a class="toc-item sub" data-idx="45">第 8 步 推 GitHub</a>
+    <a class="toc-item sub" data-idx="46">提示词原文</a>
+    <a class="toc-item sub" data-idx="47">第 9 步 部署 Vercel</a>
+    <a class="toc-item sub" data-idx="48">提示词原文</a>
+    <a class="toc-item sub" data-idx="49">MVP 功能回顾</a>
+    <a class="toc-item sub" data-idx="50">附录 A · 写 README</a>
+    <a class="toc-item sub" data-idx="51">README 提示词</a>
+    <a class="toc-item ch" data-idx="52">CH08 课后扩展</a>
+    <a class="toc-item sub" data-idx="53">第 10 步 自选优化</a>
+    <a class="toc-item sub" data-idx="54">提示词原文</a>
+    <a class="toc-item sub" data-idx="55">通用优化方向表</a>
+    <a class="toc-item sub" data-idx="56">附录 B · 做个官网</a>
+    <a class="toc-item sub" data-idx="57">组件库对照</a>
+    <a class="toc-item sub" data-idx="58">官网提示词</a>
+    <a class="toc-item ch" data-idx="59">结尾</a>
+  </nav>
+</aside>
+
+<div class="corner-meta">x:<span id="mx">0960</span> y:<span id="my">0540</span> · fps:<span id="fps">60</span> · θ:<span id="theta">0.0</span>°</div>
+
+<!-- ⬇️ slide 开始 ⬇️ -->
+
+<section class="slide active">
+  <div class="eyebrow">AI 产品 0 → 1 · 操作指南</div>
+  <h1 class="display h-xxl">人 × AI<br>产品落地全流程</h1>
+  <p class="body-xl mt-l">一个人 + Claude Code，跑完过去一整支团队的活</p>
+  <p style="position:absolute;bottom:110px;left:290px;font-size:22px;letter-spacing:2px;color:var(--text-secondary);font-weight:500">案例 · AI 情感陪伴产品（Replika / Character.AI）</p>
+</section>
+
+<section class="slide">
+  <div class="slide-header"><span>CH00 · 背景</span><span>Why Now</span></div>
+  <div class="chapter-watermark">00</div>
+  <div class="chapter">
+    <span class="num">Chapter 00</span>
+    <h2 class="title">为什么现在能<br>一个人做一支团队的事</h2>
+    <div class="sub">AI 把"执行"这道瓶颈打掉了——产品 / 设计 / 工程的活，一个人指挥 AI 就能跑完。</div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>新公司平均人数</span></div>
+  <div class="top-title">新公司平均人数：二十年一直在降</div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:32px;width:100%;max-width:1500px">
+    <div class="card" style="padding:48px 44px;text-align:left">
+      <div class="card-label">十几年前</div>
+      <div style="font-size:160px;font-weight:700;line-height:1;color:var(--text);letter-spacing:-0.04em">7-8<span style="font-size:48px;font-weight:600;color:var(--text-secondary);margin-left:8px">人</span></div>
+      <div class="body-m mt-m">一家成立一年的公司</div>
+    </div>
+    <div class="card" style="padding:48px 44px;text-align:left">
+      <div class="card-label">几年前</div>
+      <div style="font-size:160px;font-weight:700;line-height:1;color:var(--text);letter-spacing:-0.04em">3-4<span style="font-size:48px;font-weight:600;color:var(--text-secondary);margin-left:8px">人</span></div>
+      <div class="body-m mt-m">人数降到这个量级</div>
+    </div>
+    <div class="card" style="padding:48px 44px;text-align:left;border-color:var(--text)">
+      <div class="card-label">如今</div>
+      <div style="font-size:160px;font-weight:700;line-height:1;color:var(--accent);letter-spacing:-0.04em">1-2<span style="font-size:48px;font-weight:600;color:var(--text-secondary);margin-left:8px">人</span></div>
+      <div class="body-m mt-m">已经出现的版本</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>真实案例</span></div>
+  <div class="top-title">2 个人 · 1 年 · 4 亿美元营收</div>
+  <div style="width:100%;max-width:1500px">
+    <div class="card" style="padding:56px 64px">
+      <div class="card-label">远程医疗 · 2024</div>
+      <div class="body-xl mt-m" style="color:var(--text)">
+        在自家用 <strong>2 万美元起步</strong>，靠 <strong>十几个 AI 工具</strong> 运营一家远程医疗公司。
+      </div>
+      <div class="body-l mt-m">
+        第一年做到约 <span class="hl">4 亿美元营收</span>；团队从头到尾只有他和后来加入的弟弟两人。
+      </div>
+      <div class="body-m mt-l" style="color:var(--text-meta)">据《纽约时报》报道</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>Sam Altman 的预测</span></div>
+  <div class="top-title">"一个人的十亿美元公司"会出现</div>
+  <div style="width:100%;max-width:1500px">
+    <div class="formula" style="display:inline-block;font-size:64px">
+      一个人 + AI 杠杆 = <span class="hl">过去一整支组织</span>的产能
+    </div>
+    <p class="body-xl mt-xl" style="max-width:1400px;text-align:left">
+      他强调的不是<strong>一个人干所有事</strong>，而是<strong>一个人靠 AI 的杠杆</strong>，做到过去需要一整个组织才能做的事。
+    </p>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>旧玩法 vs 新玩法</span></div>
+  <div class="top-title">游戏规则变了</div>
+  <div class="two-col" style="margin-top:8px;text-align:left">
+    <div class="card">
+      <div class="card-label">旧玩法</div>
+      <h3 class="display" style="font-size:48px;line-height:1.2;margin-top:8px">融资 · 招人 · 闷头做两年</h3>
+      <ul class="bullet-list mt-m">
+        <li>拉起一支团队</li>
+        <li>花几个月验证方向</li>
+        <li>烧掉不少钱</li>
+        <li>失败了团队也散了</li>
+      </ul>
+    </div>
+    <div class="card" style="border-color:var(--text)">
+      <div class="card-label" style="color:var(--accent)">新玩法</div>
+      <h3 class="display" style="font-size:48px;line-height:1.2;margin-top:8px">周末搭出来 · 周一就上线</h3>
+      <ul class="bullet-list mt-m">
+        <li>一个人 + 一套 AI 工具</li>
+        <li>一个下午跑完验证</li>
+        <li>拿真实用户反馈迭代</li>
+        <li>不行就换一个，试错<strong>几乎零成本</strong></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="slide-header"><span>CH01 · 原则</span><span>Core Principles</span></div>
+  <div class="chapter-watermark">01</div>
+  <div class="chapter">
+    <span class="num">Chapter 01</span>
+    <h2 class="title">这套流程的<br>四条底层逻辑</h2>
+    <div class="sub">和传统做产品最不一样的地方，就是这几条。</div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>四条底层逻辑</span></div>
+  <div class="top-title">数据先行 · 串行传递 · 判断在人 · 成本断崖</div>
+  <div style="width:100%;max-width:1620px" data-step-reveal>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:24px">
+      <div class="step-card reveal-step" data-step="0" style="border-color:var(--text)">
+        <div class="step-num" style="color:var(--accent)">01</div>
+        <div class="step-title" style="font-size:40px">数据先行，不拍脑袋</div>
+        <div class="step-desc">所有需求都从<strong>真实评论</strong>里提炼，数据里找不到支撑的就不写——宁可少做，不做错。</div>
+      </div>
+      <div class="step-card reveal-step" data-step="1">
+        <div class="step-num">02</div>
+        <div class="step-title" style="font-size:40px">串行传递，零丢失</div>
+        <div class="step-desc">MRD → BRD → PRD 像<strong>接力棒</strong>，信息一棒一棒往下递，不重复提问、不丢结论。</div>
+      </div>
+      <div class="step-card reveal-step" data-step="2">
+        <div class="step-num">03</div>
+        <div class="step-title" style="font-size:40px">判断权始终在人</div>
+        <div class="step-desc">AI 找数据、做分析、写代码，但<strong>"选哪个方向""做不做""砍哪个功能"</strong>永远是你拍板。AI 干执行，你干判断。</div>
+      </div>
+      <div class="step-card reveal-step" data-step="3">
+        <div class="step-num">04</div>
+        <div class="step-title" style="font-size:40px">成本断崖式下降</div>
+        <div class="step-desc">传统验证一个方向要团队、要投资、要几个月；现在一个人一个下午走完，不行就换一个，<strong>试错几乎零成本</strong>。</div>
+      </div>
+    </div>
+    <div class="reveal-hint" style="position:absolute;bottom:96px;left:50%;transform:translateX(-50%);font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:2px;color:var(--text-meta);text-transform:uppercase">按 → 依次展开 · <span class="reveal-counter">0</span>/4</div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="slide-header"><span>CH02 · 三份文档</span><span>MRD / BRD / PRD</span></div>
+  <div class="chapter-watermark">02</div>
+  <div class="chapter">
+    <span class="num">Chapter 02</span>
+    <h2 class="title">三份文档<br>MRD · BRD · PRD</h2>
+    <div style="font-family:'JetBrains Mono',monospace;font-size:22px;letter-spacing:3px;color:var(--text-meta);text-transform:uppercase;font-weight:600;margin-top:24px">Market &nbsp;/&nbsp; Business &nbsp;/&nbsp; Product &nbsp; Requirements Document</div>
+    <div class="sub">依次回答：用户到底要什么 → 这事值不值得做 → 具体做什么。</div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>MRD · 市场需求文档</span></div>
+  <div class="top-title">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:18px;letter-spacing:3px;color:var(--text-meta);text-transform:uppercase;font-weight:600;margin-bottom:10px">Market Requirements Document</div>
+    MRD —— 用户到底要什么
+  </div>
+  <p class="body-l" style="max-width:1560px;text-align:center;color:var(--text-secondary);margin-top:20px">MRD <strong>只关注市场与用户</strong>，暂不涉及怎么做、能否盈利。一份 MRD 通常包含 <strong>4 块</strong>：</p>
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:24px;width:100%;max-width:1500px;margin-top:24px">
+    <div class="step-card"><div class="step-num">Block 01</div><div class="step-title" style="font-size:42px">数据质量评估</div><div class="step-desc">先说清这批数据<strong>能分析什么、不能分析什么</strong>。后续结论才不会失真。</div></div>
+    <div class="step-card"><div class="step-num">Block 02</div><div class="step-title" style="font-size:42px">痛点聚类</div><div class="step-desc">从几千条评论归纳出 <strong>3-5 个主要方向</strong>，每类配真实原声佐证。</div></div>
+    <div class="step-card"><div class="step-num">Block 03</div><div class="step-title" style="font-size:42px">需求优先级</div><div class="step-desc"><strong>P0 / P1 / P2</strong> 标注，按频率、情绪强度、是否影响留存判断。</div></div>
+    <div class="step-card"><div class="step-num">Block 04</div><div class="step-title" style="font-size:42px">竞品格局</div><div class="step-desc">用户在抱怨现有方案<strong>哪里不好</strong>，我们的机会窗口在哪。</div></div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>示例</span></div>
+  <div class="top-title">MRD 示例 · 瑜伽教练小琳</div>
+  <div style="width:100%;max-width:1560px">
+    <p class="body-l" style="color:var(--text-secondary);margin-bottom:20px">小琳最初想做"独立教练约课 App"。爬取 2000 条小红书 / 抖音上瑜伽教练相关评论后，<strong>高频抱怨 Top 5 把假设彻底掀翻</strong>：</p>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:20px">
+      <div class="card" style="padding:36px;border-color:var(--text)"><div class="card-label" style="color:var(--accent)">P0 必须做 · 🔥🔥🔥🔥🔥</div><div style="font-size:32px;font-weight:700;margin:14px 0 10px;line-height:1.25">学员回家就不练<br>留存差、续课难</div><div class="body-m">提及最高 · 直接影响收入</div></div>
+      <div class="card" style="padding:36px"><div class="card-label">P1 很想要 · 🔥🔥🔥🔥</div><div style="font-size:32px;font-weight:700;margin:14px 0 10px;line-height:1.25">手打个性化计划<br>累死</div><div class="body-m">全靠语音+手打，时间黑洞</div></div>
+      <div class="card" style="padding:36px"><div class="card-label">P2 锦上添花 · 🔥（垫底）</div><div style="font-size:32px;font-weight:700;margin:14px 0 10px;line-height:1.25">约课/改时间<br>麻烦</div><div class="body-m" style="color:var(--warn)">小琳最初的假设 · 排倒数第一</div></div>
+    </div>
+    <div class="card mt-l" style="padding:36px 44px;background:var(--bg-soft);border:none">
+      <div class="card-label">竞品格局 · 机会窗口</div>
+      <div class="body-l mt-m" style="color:var(--text)">现有约课工具解决了<strong>机构调度</strong>，但忽略独立教练真正的焦虑——<strong>学员留存与课后跟进</strong>。</div>
+      <div class="body-l mt-m">机会窗口 → <span class="hl">课后个性化练习计划 + 反馈跟进</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>BRD · 商业需求文档</span></div>
+  <div class="top-title">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:18px;letter-spacing:3px;color:var(--text-meta);text-transform:uppercase;font-weight:600;margin-bottom:10px">Business Requirements Document</div>
+    BRD —— 这事值不值得做
+  </div>
+  <p class="body-l" style="max-width:1560px;text-align:center;color:var(--text-secondary);margin-top:20px"><strong>有需求不等于值得做</strong>。BRD 负责<strong>算账与决策</strong>，通常包含 <strong>4 块</strong>：</p>
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:24px;width:100%;max-width:1500px;margin-top:24px">
+    <div class="step-card"><div class="step-num">Block 01</div><div class="step-title" style="font-size:42px">继承 MRD</div><div class="step-desc">直接读取 MRD 的市场结论往下接，<strong>不重复分析、不重复提问</strong>。</div></div>
+    <div class="step-card"><div class="step-num">Block 02</div><div class="step-title" style="font-size:42px">商业可行性</div><div class="step-desc">谁付费 · 怎么定价 · 成本结构 · 最小闭环（粗算单位经济）。</div></div>
+    <div class="step-card"><div class="step-num">Block 03</div><div class="step-title" style="font-size:42px">明确结论</div><div class="step-desc"><strong>值得做 / 有条件地做 / 建议暂缓</strong> 三选一，必须明确表态，不和稀泥。</div></div>
+    <div class="step-card"><div class="step-num">Block 04</div><div class="step-title" style="font-size:42px">关键风险</div><div class="step-desc">列出依赖的关键假设，指出<strong>哪个一旦不成立结论就翻转</strong>。</div></div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>示例</span></div>
+  <div class="top-title">BRD 示例 · 小琳要不要接连锁大单</div>
+  <div style="width:100%;max-width:1560px">
+    <p class="body-l" style="color:var(--text-secondary);margin-bottom:20px">产品做起来后，一家大型连锁健身房找上门——"把你的工具给我们全国 <strong>200 家店</strong>的普拉提教练用，先签一笔大的。"看起来一夜放大 100 倍。<strong>小琳把这当成新假设二次验证</strong>：</p>
+    <div class="card" style="padding:34px 44px">
+      <div class="card-label">三问算账</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:16px">
+        <div><div class="body-m" style="color:var(--text);font-weight:600;margin-bottom:6px">新人群和核心一样吗？</div><div class="body-m" style="font-size:22px;color:var(--warn)">❌ 普拉提教练 ≠ 私教瑜伽教练，跟练逻辑不同</div></div>
+        <div><div class="body-m" style="color:var(--text);font-weight:600;margin-bottom:6px">数据会不会读不懂？</div><div class="body-m" style="font-size:22px;color:var(--warn)">⚠ 200 家店一次涌入，会搅浑刚读懂的核心数据</div></div>
+        <div><div class="body-m" style="color:var(--text);font-weight:600;margin-bottom:6px">会不会冷落核心人群？</div><div class="body-m" style="font-size:22px;color:var(--warn)">⚠ 机构需求会吃掉全部精力，私教教练被晾</div></div>
+      </div>
+    </div>
+    <div class="two-col mt-l">
+      <div class="card" style="padding:32px 40px;border-color:var(--text)">
+        <div class="card-label" style="color:var(--accent)">明确结论</div>
+        <div style="font-size:28px;font-weight:600;margin-top:14px;line-height:1.4">值得做，<span class="hl">但有条件</span>：先在 <strong>3-5 家店</strong>小范围试点，同时<strong>守住核心私教教练</strong>、把转介增长引擎做稳。</div>
+      </div>
+      <div class="card" style="padding:32px 40px">
+        <div class="card-label">关键风险</div>
+        <div class="body-m mt-m" style="color:var(--text-secondary)">表面看最大的机会，常常是 <strong>PMF 的坟墓</strong>——过早扩进"看似相似实则不同"的人群，会稀释刚拿命验证出来的东西。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>PRD · 产品需求文档</span></div>
+  <div class="top-title">
+    <div style="font-family:'JetBrains Mono',monospace;font-size:18px;letter-spacing:3px;color:var(--text-meta);text-transform:uppercase;font-weight:600;margin-bottom:10px">Product Requirements Document</div>
+    PRD —— 具体做什么、怎么做
+  </div>
+  <p class="body-l" style="max-width:1560px;text-align:center;color:var(--text-secondary);margin-top:20px">方向确定、值得做之后，<strong>才进入产品本身</strong>。PRD 要细到<strong>能直接交给 AI 编码</strong>，通常包含 <strong>4 块</strong>：</p>
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:24px;width:100%;max-width:1500px;margin-top:24px">
+    <div class="step-card"><div class="step-num">Block 01</div><div class="step-title" style="font-size:42px">继承 BRD</div><div class="step-desc">读取 BRD 的商业判断与 P0/P1 功能列表往下接。</div></div>
+    <div class="step-card"><div class="step-num">Block 02</div><div class="step-title" style="font-size:42px">MVP 范围</div><div class="step-desc">V1 最多 <strong>3 个核心功能</strong>；附"不做清单"，且<strong>不做清单比要做的更长更显眼</strong>。</div></div>
+    <div class="step-card"><div class="step-num">Block 03</div><div class="step-title" style="font-size:42px">页面 & 组件</div><div class="step-desc">每页有什么、每个组件做什么（交互、状态、边界），写到<strong>可直接执行</strong>。</div></div>
+    <div class="step-card"><div class="step-num">Block 04</div><div class="step-title" style="font-size:42px">设计交接</div><div class="step-desc">产品调性、色彩方向、参考竞品，供设计与开发使用。</div></div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>示例</span></div>
+  <div class="top-title">PRD 示例 · 小琳的 MVP 范围文档</div>
+  <div style="width:100%;max-width:1560px">
+    <p class="body-l" style="color:var(--text-secondary);margin-bottom:20px">MRD 验证后，小琳把"想做的一堆"砍到"最小那两个"。<strong>"新增门槛"比"做什么"更狠</strong>——决策点从"该不该做"变成"有没有证据"：</p>
+    <div class="two-col">
+      <div class="card" style="padding:38px 44px;border-color:var(--text)">
+        <div class="card-label" style="color:var(--accent)">要做 · 两件事</div>
+        <ul class="bullet-list mt-m"><li>口述 → 生成<strong>图文练习计划</strong></li><li>学员端<strong>打卡反馈</strong></li></ul>
+      </div>
+      <div class="card" style="padding:38px 44px">
+        <div class="card-label">刻意不做（更长更显眼）</div>
+        <ul class="bullet-list mt-m" style="font-size:24px"><li>约课（<strong>已证伪</strong>）</li><li>收款</li><li>视频库</li><li>师生社区</li><li>付费会员</li><li>多人协作</li></ul>
+      </div>
+    </div>
+    <div class="card mt-l" style="padding:30px 44px;background:var(--bg-soft);border:none">
+      <div class="card-label">新增功能门槛</div>
+      <div class="body-l mt-m" style="color:var(--text)"><span class="hl">≥30% 活跃教练主动说"没有它就用不下去"</span>，才考虑加。</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>串行 vs 一次生成</span></div>
+  <div class="top-title">为什么三份文档要串行</div>
+  <div style="display:inline-block">
+    <div class="formula" style="font-size:60px">看市场 → 决定做不做 → <span class="hl">才定怎么做</span></div>
+  </div>
+  <div class="three-col mt-xl" style="max-width:1620px">
+    <div class="card" style="padding:36px 40px"><div class="card-label">判断点清晰</div><div class="body-m mt-m">MRD 让你看清市场，BRD 让你决定做不做，PRD 才开始定怎么做。跳过任何一步都可能整体跑偏。</div></div>
+    <div class="card" style="padding:36px 40px"><div class="card-label">接力棒交接</div><div class="body-m mt-m">每份文档末尾有结构化<strong>交接区</strong>，下一份自动读取，不重复提问、不丢信息。</div></div>
+    <div class="card" style="padding:36px 40px;border-color:var(--text)"><div class="card-label" style="color:var(--accent)">人始终拍板</div><div class="body-m mt-m">AI 干执行（爬数据、做分析、写文档、写代码）；<strong>判断永远由人来定</strong>。</div></div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="slide-header"><span>CH03 · 总览</span><span>End-to-end</span></div>
+  <div class="chapter-watermark">03</div>
+  <div class="chapter">
+    <span class="num">Chapter 03</span>
+    <h2 class="title">全流程总览<br>10 步流水线</h2>
+    <div class="sub">整条线：数据 → 三份文档 → 技术选型 → 开发 → 本地验收 → 上线。</div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>怎么用这份指南</span></div>
+  <div class="top-title">五条节奏纪律</div>
+  <ul class="bullet-list" style="max-width:1500px;font-size:30px;text-align:left;margin:0 auto">
+    <li><strong>全程手动，一步一发</strong>——每一步都是一段你手动发给 Claude Code 的提示词。不要一次贴多段，也不要让它自己从头做到尾。</li>
+    <li><strong>节奏你来控</strong>——开发阶段尤其要一块一块来，每块本地能跑、你看过了，再继续下一块。</li>
+    <li><strong>尽量同一个会话</strong>——调研那几步（第 0-4 步）在同一个对话里连着跑，它才记得上一步的产物。</li>
+    <li><strong>项目结构</strong>——文档放 <code style="background:var(--bg-soft);padding:2px 8px;border-radius:4px">docs/</code>、数据放 <code style="background:var(--bg-soft);padding:2px 8px;border-radius:4px">data/</code>、前端代码直接在项目根目录。</li>
+    <li><strong>常见卡点是教学内容</strong>——爬取限流、数据库连接、填接口密钥，停下来一起解决。</li>
+  </ul>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>全流程总览</span></div>
+  <div class="top-title">十步流水线</div>
+  <div style="width:100%;max-width:1620px" data-step-reveal>
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px">
+      <div class="step-card reveal-step" data-step="0" style="padding:24px 22px"><div class="step-num">Step 0</div><div style="font-size:24px;font-weight:700;margin-top:8px">初始化</div></div>
+      <div class="step-card reveal-step" data-step="1" style="padding:24px 22px"><div class="step-num">Step 1</div><div style="font-size:24px;font-weight:700;margin-top:8px">爬评论 + 数据文档</div></div>
+      <div class="step-card reveal-step" data-step="2" style="padding:24px 22px"><div class="step-num">Step 2</div><div style="font-size:24px;font-weight:700;margin-top:8px">MRD</div></div>
+      <div class="step-card reveal-step" data-step="3" style="padding:24px 22px"><div class="step-num">Step 3</div><div style="font-size:24px;font-weight:700;margin-top:8px">BRD</div></div>
+      <div class="step-card reveal-step" data-step="4" style="padding:24px 22px"><div class="step-num">Step 4</div><div style="font-size:24px;font-weight:700;margin-top:8px">PRD</div></div>
+      <div class="step-card reveal-step" data-step="5" style="padding:24px 22px"><div class="step-num">Step 5</div><div style="font-size:24px;font-weight:700;margin-top:8px">技术选型</div></div>
+      <div class="step-card reveal-step" data-step="6" style="padding:24px 22px"><div class="step-num">Step 6</div><div style="font-size:24px;font-weight:700;margin-top:8px">开发 MVP</div></div>
+      <div class="step-card reveal-step" data-step="7" style="padding:24px 22px"><div class="step-num">Step 7</div><div style="font-size:24px;font-weight:700;margin-top:8px">本地验收</div></div>
+      <div class="step-card reveal-step" data-step="8" style="padding:24px 22px"><div class="step-num">Step 8</div><div style="font-size:24px;font-weight:700;margin-top:8px">推 GitHub</div></div>
+      <div class="step-card reveal-step" data-step="9" style="padding:24px 22px;border-color:var(--text)"><div class="step-num" style="color:var(--accent)">Step 9</div><div style="font-size:24px;font-weight:700;margin-top:8px">部署 Vercel</div></div>
+    </div>
+    <div class="body-l mt-xl reveal-final" style="color:var(--text-secondary);text-align:center">阶段一·调研 · 阶段二·准备 · 阶段三·开发 · 阶段四·上线</div>
+    <div class="reveal-hint" style="position:absolute;bottom:96px;left:50%;transform:translateX(-50%);font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:2px;color:var(--text-meta);text-transform:uppercase">按 → 依次点亮 · <span class="reveal-counter">0</span>/10</div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="slide-header"><span>CH04 · 阶段一</span><span>Research</span></div>
+  <div class="chapter-watermark">04</div>
+  <div class="chapter">
+    <span class="num">Chapter 04</span>
+    <h2 class="title">阶段一<br>市场调研</h2>
+    <div class="sub">第 0-4 步：初始化 → 爬数据 → MRD → BRD → PRD。</div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span>Step 0</span><span>初始化项目</span></div>
+  <div class="top-title">第 0 步 · 初始化项目</div>
+  <div style="width:100%;max-width:1620px">
+    <div class="card" style="padding:32px 44px;background:var(--bg-soft);border:none">
+      <div class="card-label">明确产品方向</div>
+      <div class="body-l mt-m" style="color:var(--text)">一个<strong>情感陪伴方向</strong>的 AI 产品。</div>
+      <ul class="bullet-list" style="font-size:24px;text-align:left;margin-top:8px">
+        <li>可以 AI 对话，支持<strong>短期记忆 + 中期记忆</strong></li>
+        <li>有<strong>登录注册</strong>，可以存储用户数据</li>
+        <li>支持<strong>对外分享</strong>，可以放到简历里</li>
+      </ul>
+    </div>
+    <div class="three-col mt-l">
+      <div class="card"><div class="card-label">建子目录</div><div class="body-l mt-m"><strong>docs/</strong> 放所有文档<br><strong>data/</strong> 放数据<br>根目录留给后面代码</div></div>
+      <div class="card"><div class="card-label">共享上下文</div><div class="body-l mt-m">产品方向 · 调研对象 · 文档链路 · 存放规范 · <strong>数据规范</strong>（不许编造、不展示个人信息）</div></div>
+      <div class="card" style="border-color:var(--text)"><div class="card-label" style="color:var(--accent)">复述确认</div><div class="body-l mt-m">建完让它把<strong>记下来的背景念给你听</strong>，确认无误再进入下一步。</div></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>Step 0 · 原文</span></div>
+  <div class="top-title">第 0 步 · 提示词原文</div>
+  <div class="prompt-box" style="position:relative;background:#1f1f1f;border-radius:16px;padding:56px 44px 36px;width:100%;max-width:1540px;height:780px;overflow-y:auto;box-sizing:border-box;text-align:left">
+<button class="copy-btn" onclick="(function(b){const p=b.parentElement.querySelector('pre');navigator.clipboard.writeText(p.textContent).then(()=>{b.textContent='✓ 已复制';b.classList.add('done');setTimeout(()=>{b.textContent='复制提示词';b.classList.remove('done')},1600)}).catch(()=>{b.textContent='复制失败'})})(this)">复制提示词</button>
+<pre class="mono" style="font-size:23px;line-height:1.7;color:#e8eaed;white-space:pre-wrap;word-break:break-word;margin:0;text-align:left">我要做一个"AI 情感陪伴"产品的市场调研，会按 数据 → MRD → BRD → PRD 四步走，每一步产出一份文档。
+
+先帮我把项目搭好：
+1. 在我的项目文件夹里建两个子文件夹：docs/（放所有文档）、data/（放数据）。文档和数据一律放进这两个子文件夹，根目录留给后面开发用。
+2. 把整个调研的共享上下文记下来（写进项目说明文件里），让后面每一步都自动继承，内容包括：
+   - 产品方向：AI 情感陪伴
+   - 调研对象：Replika、Character.AI
+   - 文档链路：数据文档 → MRD → BRD → PRD，后一份必须读取前一份的产物，不重复分析、不重复问我
+   - 存放规范：每份文档都写成 Markdown 放进 docs/；数据文件（CSV）放进 data/；根目录留给后面的代码
+   - 数据规范：所有结论、数字、引用都必须来自真实采集到的评论数据，不许编造；任何文档里都不展示能认出个人身份的信息（用户名打码或不展示）
+3. 建完后把你记下来的这些背景念给我确认一下。</pre>
+</div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span>Step 1</span><span>装 Skills · 自动调研</span></div>
+  <div class="top-title">第 1 步 · 装 Skills 自动调研三平台真实需求</div>
+  <p class="body-l" style="max-width:1560px;text-align:center;color:var(--text-secondary);margin-bottom:18px">不再自己写 Python 爬虫——给 Claude Code 装好 <strong>AIPM-Skills</strong>，让 <strong>product-insight-miner</strong> 自动跨 Reddit / X / 小红书挖掘真实痛点。</p>
+  <div class="three-col" style="max-width:1620px">
+    <div class="step-card">
+      <div class="step-num">Step 01</div>
+      <div class="step-title" style="font-size:38px">安装 Skills</div>
+      <div class="step-desc">把 <code style="background:var(--bg-soft);padding:2px 6px;border-radius:4px;font-size:18px">chusimin/AIPM-Skills</code> 仓库下的所有 Skills 装到本地 Claude Code。</div>
+    </div>
+    <div class="step-card">
+      <div class="step-num">Step 02</div>
+      <div class="step-title" style="font-size:38px">检查可用</div>
+      <div class="step-desc">列出当前可用的 skill 清单，<strong>确认安装到位</strong>，再调下一步。</div>
+    </div>
+    <div class="step-card" style="border-color:var(--text)">
+      <div class="step-num" style="color:var(--accent)">Step 03</div>
+      <div class="step-title" style="font-size:38px">调用 miner</div>
+      <div class="step-desc">用 <strong>product-insight-miner</strong> 跨三平台挖近 <strong>2 个月</strong>用户对情感陪伴产品的痛点，输出 Markdown 分析报告。</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>Step 1 · 三段提示词</span></div>
+  <div class="top-title">第 1 步 · 提示词原文（依次发三段）</div>
+  <div style="width:100%;max-width:1620px;display:flex;flex-direction:column;gap:18px">
+    <div class="prompt-box" style="position:relative;background:#1f1f1f;border-radius:14px;padding:44px 40px 24px;text-align:left">
+      <div style="position:absolute;top:14px;left:24px;font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:2px;color:#5ef0a0;text-transform:uppercase">① 安装 Skills</div>
+      <button class="copy-btn" onclick="(function(b){const p=b.parentElement.querySelector('pre');navigator.clipboard.writeText(p.textContent).then(()=>{b.textContent='✓ 已复制';b.classList.add('done');setTimeout(()=>{b.textContent='复制';b.classList.remove('done')},1600)}).catch(()=>{b.textContent='复制失败'})})(this)">复制</button>
+<pre class="mono" style="font-size:21px;line-height:1.6;color:#e8eaed;white-space:pre-wrap;word-break:break-word;margin:0;text-align:left">帮我安装：https://github.com/chusimin/AIPM-Skills，这个仓库下的所有 Skills</pre>
+    </div>
+    <div class="prompt-box" style="position:relative;background:#1f1f1f;border-radius:14px;padding:44px 40px 24px;text-align:left">
+      <div style="position:absolute;top:14px;left:24px;font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:2px;color:#5ef0a0;text-transform:uppercase">② 检查可用</div>
+      <button class="copy-btn" onclick="(function(b){const p=b.parentElement.querySelector('pre');navigator.clipboard.writeText(p.textContent).then(()=>{b.textContent='✓ 已复制';b.classList.add('done');setTimeout(()=>{b.textContent='复制';b.classList.remove('done')},1600)}).catch(()=>{b.textContent='复制失败'})})(this)">复制</button>
+<pre class="mono" style="font-size:21px;line-height:1.6;color:#e8eaed;white-space:pre-wrap;word-break:break-word;margin:0;text-align:left">检查我现在可用的 skill</pre>
+    </div>
+    <div class="prompt-box" style="position:relative;background:#1f1f1f;border-radius:14px;padding:44px 40px 24px;text-align:left">
+      <div style="position:absolute;top:14px;left:24px;font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:2px;color:#5ef0a0;text-transform:uppercase">③ 调用 product-insight-miner</div>
+      <button class="copy-btn" onclick="(function(b){const p=b.parentElement.querySelector('pre');navigator.clipboard.writeText(p.textContent).then(()=>{b.textContent='✓ 已复制';b.classList.add('done');setTimeout(()=>{b.textContent='复制';b.classList.remove('done')},1600)}).catch(()=>{b.textContent='复制失败'})})(this)">复制</button>
+<pre class="mono" style="font-size:21px;line-height:1.6;color:#e8eaed;white-space:pre-wrap;word-break:break-word;margin:0;text-align:left">调用 product-insight-miner 来帮我挖掘近 2 个月三个平台上用户关于情感陪伴产品的痛点，输出一份 markdown 分析报告到我的项目文件夹中</pre>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span>Step 2</span><span>MRD</span></div>
+  <div class="top-title">第 2 步 · 产出 MRD（市场需求文档）</div>
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:24px;width:100%;max-width:1560px">
+    <div class="step-card"><div class="step-num">Section 1</div><div class="step-title" style="font-size:38px">数据质量评估</div><div class="step-desc">继承数据文档的局限，具体到本次分析：样本够不够、语言/地区/时间偏差。</div></div>
+    <div class="step-card"><div class="step-num">Section 2</div><div class="step-title" style="font-size:38px">痛点聚类</div><div class="step-desc">分批读评论标主题 → 聚成 3-5 簇；每簇配 <strong>3-5 条真实原声</strong>（不许编造）。</div></div>
+    <div class="step-card"><div class="step-num">Section 3</div><div class="step-title" style="font-size:38px">需求优先级</div><div class="step-desc">逐条标 <strong>P0/P1/P2</strong>，每条带判断理由 + 真实原声。</div></div>
+    <div class="step-card"><div class="step-num">Section 4</div><div class="step-title" style="font-size:38px">竞品格局</div><div class="step-desc">列出现有方案 → 抱怨什么 → <strong>我们的机会窗口</strong>。</div></div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>Step 2 · 原文</span></div>
+  <div class="top-title">第 2 步 · 提示词原文</div>
+  <div class="prompt-box" style="position:relative;background:#1f1f1f;border-radius:16px;padding:56px 44px 36px;width:100%;max-width:1540px;height:780px;overflow-y:auto;box-sizing:border-box;text-align:left">
+<button class="copy-btn" onclick="(function(b){const p=b.parentElement.querySelector('pre');navigator.clipboard.writeText(p.textContent).then(()=>{b.textContent='✓ 已复制';b.classList.add('done');setTimeout(()=>{b.textContent='复制提示词';b.classList.remove('done')},1600)}).catch(()=>{b.textContent='复制失败'})})(this)">复制提示词</button>
+<pre class="mono" style="font-size:23px;line-height:1.7;color:#e8eaed;white-space:pre-wrap;word-break:break-word;margin:0;text-align:left">基于真实数据产出 MRD。请读取分析报告，产出 Markdown 格式的 MRD，严格包含四个部分：
+
+1. 数据质量评估：先说清楚这批数据能分析什么、不能分析什么（继承数据文档里的局限，并具体到本次分析：样本够不够、评分是否两极化、语言/地区偏差、时间偏差、是否只代表留评用户）。目的是让读者知道后面的结论有多可信。
+
+2. 痛点聚类：把几千条评论自动归类成 3-5 个主要需求方向。方法上分批读评论做主题标注（关键词 + 语义判断），再聚合成 3-5 个簇。每个簇给出：簇名称、占比/条数、一段说明，以及 3-5 条**真实原声引用**（必须是数据里真实存在的评论，不许编造，可标注评分和来源）。
+
+3. 需求优先级：把聚类出的需求逐条标 P0（必须做）/ P1（很想要）/ P2（锦上添花），每条都要有判断理由 + 真实原声支撑。优先级按出现频率、情绪强度、是否影响留存来判断。
+
+4. 竞品格局：列出现有替代方案（Character.AI、Replika、Nomi、Kindroid、SillyTavern 等），分别说它们解决了什么、用户在评论里抱怨它们哪里做得不好，最后指出我们的机会窗口在哪。竞品的"做得不好"尽量用评论原声佐证。
+
+要求：所有数字和引用都来自真实数据，不凭空发挥；引用里不带个人身份信息。最后把 MRD 文档放到项目中。
+
+——————————————————————
+
+将 MRD 文档转成带样式的 HTML</pre>
+</div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span>Step 3</span><span>BRD</span></div>
+  <div class="top-title">第 3 步 · 产出 BRD（商业需求文档）</div>
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:24px;width:100%;max-width:1560px">
+    <div class="step-card"><div class="step-num">Section 1</div><div class="step-title" style="font-size:38px">市场结论继承</div><div class="step-desc">把 MRD 的痛点聚类与优先级<strong>概括为既定前提</strong>，BRD 能被独立读懂。</div></div>
+    <div class="step-card"><div class="step-num">Section 2</div><div class="step-title" style="font-size:38px">商业可行性</div><div class="step-desc">谁付费 · 怎么定价 · 成本结构（<strong>LLM 调用</strong>是大头）· 单位经济粗算。</div></div>
+    <div class="step-card" style="border-color:var(--text)"><div class="step-num" style="color:var(--accent)">Section 3</div><div class="step-title" style="font-size:38px">明确结论</div><div class="step-desc">值得做 / 有条件 / 暂缓 三选一，<strong>必须表态</strong>。"有条件"要写清条件。</div></div>
+    <div class="step-card"><div class="step-num">Section 4</div><div class="step-title" style="font-size:38px">关键风险</div><div class="step-desc">列出关键假设 + <strong>哪个错了结论翻转</strong> + 怎么验证。</div></div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>Step 3 · 原文</span></div>
+  <div class="top-title">第 3 步 · 提示词原文</div>
+  <div class="prompt-box" style="position:relative;background:#1f1f1f;border-radius:16px;padding:56px 44px 36px;width:100%;max-width:1540px;height:780px;overflow-y:auto;box-sizing:border-box;text-align:left">
+<button class="copy-btn" onclick="(function(b){const p=b.parentElement.querySelector('pre');navigator.clipboard.writeText(p.textContent).then(()=>{b.textContent='✓ 已复制';b.classList.add('done');setTimeout(()=>{b.textContent='复制提示词';b.classList.remove('done')},1600)}).catch(()=>{b.textContent='复制失败'})})(this)">复制提示词</button>
+<pre class="mono" style="font-size:23px;line-height:1.7;color:#e8eaed;white-space:pre-wrap;word-break:break-word;margin:0;text-align:left">基于 MRD 产出 BRD。请读取你刚才写好的那份 MRD，**直接继承它的市场分析结论，不要重复问我、不要重新分析评论**，产出一份 BRD（Markdown，放进 docs/），包含：
+
+1. 市场结论继承：用一小段把 MRD 里的痛点聚类和需求优先级作为既定前提概括出来（让 BRD 能被独立读懂）。
+
+2. 商业可行性：
+   - 谁付费（目标付费人群）
+   - 怎么定价（具体方案 + 价格数字，可参考竞品订阅价）
+   - 成本结构（主要是 LLM 调用成本，语音/图像等可选成本，获客成本量级）
+   - 最小闭环能不能跑通（粗算单位经济：一个付费用户的月收入 vs 月成本）
+
+3. 明确结论：给出"值得做 / 有条件地做 / 建议暂缓"三选一，**必须明确表态，不和稀泥**。如果是"有条件地做"，写清楚是什么条件。
+
+4. 关键风险：列出这个结论依赖的几个关键假设，并指出**如果哪个假设错了，结论就会翻转**（比如 LLM 成本下不来、付费转化达不到某个比例、留存撑不住），每条说清楚怎么验证。
+
+要求：商业判断要基于 MRD 的真实结论，不要重新编市场故事。</pre>
+</div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span>Step 4</span><span>PRD</span></div>
+  <div class="top-title">第 4 步 · 产出 PRD（产品需求文档）</div>
+  <div class="three-col" style="max-width:1620px">
+    <div class="step-card" style="border-color:var(--text)"><div class="step-num" style="color:var(--accent)">Section 1</div><div class="step-title" style="font-size:40px">MVP 范围</div><div class="step-desc">V1 最多 <strong>3 个核心功能</strong>（从 P0 里挑）+ "不做清单"（<strong>比要做的更长更显眼</strong>）。</div></div>
+    <div class="step-card"><div class="step-num">Section 2</div><div class="step-title" style="font-size:40px">页面 & 组件</div><div class="step-desc">每页 / 每组件写到 AI 能<strong>直接照着实现</strong>——字段、按钮、空状态、异常态。</div></div>
+    <div class="step-card"><div class="step-num">Section 3</div><div class="step-title" style="font-size:40px">设计交接</div><div class="step-desc">产品调性关键词 · 色彩方向 · 参考竞品设计。</div></div>
+  </div>
+  <p class="body-l mt-xl" style="color:var(--text-meta);text-align:center">要求：范围严格收敛到 <strong style="color:var(--text)">3 个功能以内</strong>，宁可少不要多。</p>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>Step 4 · 原文</span></div>
+  <div class="top-title">第 4 步 · 提示词原文</div>
+  <div class="prompt-box" style="position:relative;background:#1f1f1f;border-radius:16px;padding:56px 44px 36px;width:100%;max-width:1540px;height:780px;overflow-y:auto;box-sizing:border-box;text-align:left">
+<button class="copy-btn" onclick="(function(b){const p=b.parentElement.querySelector('pre');navigator.clipboard.writeText(p.textContent).then(()=>{b.textContent='✓ 已复制';b.classList.add('done');setTimeout(()=>{b.textContent='复制提示词';b.classList.remove('done')},1600)}).catch(()=>{b.textContent='复制失败'})})(this)">复制提示词</button>
+<pre class="mono" style="font-size:23px;line-height:1.7;color:#e8eaed;white-space:pre-wrap;word-break:break-word;margin:0;text-align:left">基于 BRD 产出 PRD。请读取你写好的那份 BRD 和那份 MRD，产出一份 PRD（Markdown，放进 docs/），包含：
+
+1. MVP 范围：V1 最多 3 个核心功能（从 MRD 的 P0 里挑），每个功能一句话说清解决哪个痛点。然后写一份**"不做清单"——明确这一版不做什么（把 P1/P2 和常见但会拖慢进度的功能列进去）。不做清单要比要做的清单更长、更显眼。**
+
+2. 页面 &amp; 组件：列出 MVP 需要的每个页面，每个页面写清楚：这个页面是干嘛的、上面有哪些组件、每个组件具体做什么（交互、状态、边界）。**写法要让 AI 编码 agent 能直接照着实现**——具体到字段、按钮、空状态、异常态。
+
+3. 设计交接：产品调性（几个关键词）、色彩方向、参考竞品的设计（指出参考谁的什么），供下一步做 UI 用。
+
+要求：范围严格收敛到 3 个功能以内，宁可少不要多。</pre>
+</div>
+</section>
+
+<section class="slide">
+  <div class="slide-header"><span>CH05 · 阶段二</span><span>Pre-dev</span></div>
+  <div class="chapter-watermark">05</div>
+  <div class="chapter">
+    <span class="num">Chapter 05</span>
+    <h2 class="title">阶段二<br>开发准备</h2>
+    <div class="sub">先把"前端 / 后端 / 数据库"这三个词搞懂，再做技术选型。</div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>前端 = 餐厅大堂</span></div>
+  <div class="top-title">前端 —— 运行在用户浏览器里的代码</div>
+  <div style="width:100%;max-width:1560px">
+    <div class="card" style="padding:48px 56px">
+      <div class="card-label">职责</div>
+      <div class="body-xl mt-m" style="color:var(--text)">把界面画出来（渲染 UI）、响应点击和输入、把请求发给后端。</div>
+    </div>
+    <div class="two-col mt-l">
+      <div class="card" style="padding:38px 44px;background:var(--bg-soft);border:none">
+        <div class="card-label">餐厅比喻</div>
+        <div style="font-size:36px;font-weight:700;margin-top:14px">大堂</div>
+        <div class="body-m mt-m">桌椅、菜单、点菜的地方——客人看得见的那部分。<br>本项目里 = 登录页、聊天界面、记忆档案页。</div>
+      </div>
+      <div class="card" style="padding:38px 44px;border-color:var(--text)">
+        <div class="card-label" style="color:var(--accent)">技术栈</div>
+        <div style="font-size:36px;font-weight:700;margin-top:14px">React + Tailwind + <span class="hl">Next.js</span></div>
+        <div class="body-m mt-m">React 写界面、Tailwind 调样式，整个项目跑在 Next.js 框架上。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>后端 = 餐厅后厨</span></div>
+  <div class="top-title">后端 —— 运行在服务器上的代码</div>
+  <div style="width:100%;max-width:1560px">
+    <div class="card" style="padding:42px 52px">
+      <div class="card-label">职责</div>
+      <div class="body-xl mt-m" style="color:var(--text)">业务逻辑 · 身份验证 · 调用第三方服务（大模型 API）· 读写数据库。前后端靠<strong>接口（API）</strong>通信。</div>
+    </div>
+    <div class="two-col mt-l">
+      <div class="card" style="padding:36px 44px;background:var(--bg-soft);border:none">
+        <div class="card-label">餐厅比喻</div>
+        <div style="font-size:34px;font-weight:700;margin-top:14px">后厨</div>
+        <div class="body-m mt-m">客人看不到、活儿都在这儿干。本项目里：你发一句话 → 后端拼"人设+记忆" → 送给大模型 → 拿回复传回前端。</div>
+      </div>
+      <div class="card" style="padding:36px 44px;border-color:var(--warn)">
+        <div class="card-label" style="color:var(--warn)">为什么必须有</div>
+        <div class="body-m mt-m" style="color:var(--text)"><strong style="color:var(--warn)">大模型密钥只能放服务器端</strong>，绝不能写进前端——前端代码用户能看到，等于把钥匙挂门口。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>数据库 = 仓库冰箱</span></div>
+  <div class="top-title">数据库 —— 数据的持久化存储</div>
+  <div style="width:100%;max-width:1560px">
+    <div class="card" style="padding:42px 52px">
+      <div class="card-label">职责</div>
+      <div class="body-xl mt-m" style="color:var(--text)">不存进去，内存里的东西一刷新就没了。<strong>关系型数据库</strong>按"表"存：一行一条记录、一列一个字段，用 <strong>SQL</strong> 增删改查。</div>
+    </div>
+    <div class="two-col mt-l">
+      <div class="card" style="padding:36px 44px;background:var(--bg-soft);border:none">
+        <div class="card-label">餐厅比喻</div>
+        <div style="font-size:34px;font-weight:700;margin-top:14px">仓库和冰箱</div>
+        <div class="body-m mt-m">食材、账本存这儿，关了门也不丢。本项目里 = 账号、聊天记录、长期记忆。</div>
+      </div>
+      <div class="card" style="padding:36px 44px;border-color:var(--text)">
+        <div class="card-label" style="color:var(--accent)">技术栈</div>
+        <div style="font-size:34px;font-weight:700;margin-top:14px"><span class="hl">Supabase</span>（底层 PostgreSQL）</div>
+        <div class="body-m mt-m">业界主流的关系型数据库，<strong>顺手把登录注册</strong>也一起做了。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>一次完整请求</span></div>
+  <div class="top-title">三层结构 · 一次完整交互</div>
+  <div style="width:100%;max-width:1700px">
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;align-items:stretch">
+      <div class="card" style="padding:26px 20px;text-align:center"><div class="card-label">前端</div><div style="font-size:24px;font-weight:700;margin-top:10px">点一下</div></div>
+      <div class="card" style="padding:26px 20px;text-align:center;background:var(--bg-soft);border:none"><div class="card-label">API</div><div style="font-size:24px;font-weight:700;margin-top:10px">请求 →</div></div>
+      <div class="card" style="padding:26px 20px;text-align:center;border-color:var(--text)"><div class="card-label" style="color:var(--accent)">后端</div><div style="font-size:24px;font-weight:700;margin-top:10px">处理</div></div>
+      <div class="card" style="padding:26px 20px;text-align:center"><div class="card-label">数据库</div><div style="font-size:24px;font-weight:700;margin-top:10px">读/写</div></div>
+      <div class="card" style="padding:26px 20px;text-align:center"><div class="card-label">前端</div><div style="font-size:24px;font-weight:700;margin-top:10px">渲染</div></div>
+    </div>
+    <div class="card mt-xl" style="padding:36px 48px">
+      <div class="card-label">最后一步</div>
+      <div class="body-l mt-m" style="color:var(--text)">用 <strong>Vercel</strong> 把整个产品部署到网上，别人就能通过网址打开。</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span>Step 5</span><span>技术选型</span></div>
+  <div class="top-title">第 5 步 · 技术选型（联网核对最新）</div>
+  <ul class="bullet-list" style="max-width:1560px;font-size:30px;text-align:left;margin:0 auto">
+    <li><strong>联网检索 · 不只凭训练记忆</strong>——前端框架 / 样式方案 / UI 组件库 / 大模型调用方式 / 部署平台都查最新文档。</li>
+    <li>每一项说明：<strong>负责什么 · 为什么选它 · 与主流替代的取舍 · 当前最新稳定版本 + 参考链接</strong>。</li>
+    <li>"最小够用"原则——不引入 MVP 用不到的依赖。</li>
+    <li>最后用一句话概括整套技术栈，并列出<strong>需要你确认的决策点</strong>（如模型选择）。</li>
+    <li><strong>可选 ⬇️</strong>：若担心选型基于旧信息，再发一段让它<strong>联网核对版本 + 给出更新方案</strong>。</li>
+  </ul>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>Step 5 · 原文 + 可选补丁</span></div>
+  <div class="top-title">第 5 步 · 提示词原文</div>
+  <div style="width:100%;max-width:1620px;display:flex;flex-direction:column;gap:18px">
+    <div class="prompt-box" style="position:relative;background:#1f1f1f;border-radius:14px;padding:44px 40px 24px;text-align:left">
+      <div style="position:absolute;top:14px;left:24px;font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:2px;color:#5ef0a0;text-transform:uppercase">主提示词</div>
+      <button class="copy-btn" onclick="(function(b){const p=b.parentElement.querySelector('pre');navigator.clipboard.writeText(p.textContent).then(()=>{b.textContent='✓ 已复制';b.classList.add('done');setTimeout(()=>{b.textContent='复制';b.classList.remove('done')},1600)}).catch(()=>{b.textContent='复制失败'})})(this)">复制</button>
+<pre class="mono" style="font-size:20px;line-height:1.6;color:#e8eaed;white-space:pre-wrap;word-break:break-word;margin:0;text-align:left">进入开发前，先做技术选型。这是一个面向 C 端的网页应用，MVP 阶段，核心是与 AI 角色对话，后续需要能便捷地部署上线。
+
+请先联网检索 / 查阅官方文档，基于当前最新信息（不要只凭训练记忆）做技术选型，并满足：
+1. 覆盖前端框架、样式方案、UI 组件库、大模型调用方式、部署平台。
+2. 每一项都说明：它负责什么、为什么在本场景下选它、与主流替代方案的取舍，并标注当前最新稳定版本和参考来源（官网/文档链接）。
+3. 以"最小够用"为原则，不引入 MVP 用不到的依赖。
+4. 最后用一句话概括整套技术栈，并列出需要我确认的决策点（例如模型选择）。确认后再进入开发。</pre>
+    </div>
+    <div class="prompt-box" style="position:relative;background:#1f1f1f;border-radius:14px;padding:44px 40px 24px;text-align:left">
+      <div style="position:absolute;top:14px;left:24px;font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:2px;color:var(--text-meta);text-transform:uppercase">可选 ⬇️ · 联网核对补丁</div>
+      <button class="copy-btn" onclick="(function(b){const p=b.parentElement.querySelector('pre');navigator.clipboard.writeText(p.textContent).then(()=>{b.textContent='✓ 已复制';b.classList.add('done');setTimeout(()=>{b.textContent='复制';b.classList.remove('done')},1600)}).catch(()=>{b.textContent='复制失败'})})(this)">复制</button>
+<pre class="mono" style="font-size:20px;line-height:1.6;color:#e8eaed;white-space:pre-wrap;word-break:break-word;margin:0;text-align:left">你这份选型可能基于训练时的旧信息，没有核对当前情况。请先联网检索 / 查阅官方文档，确认以下几点再给我更新版：
+1. 你推荐的每个框架 / 库，目前的最新稳定版本是多少；
+2. 在这些版本下，推荐的初始化方式、用法或最佳实践有没有变化；
+3. 有没有更主流、或更适合本场景的新方案值得纳入。
+核对后给我一份更新过的选型方案，每一项标注版本号和你参考的来源（官网/文档链接），并指出哪些地方和你最初的回答不同、为什么改。</pre>
+    </div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="slide-header"><span>CH06 · 阶段三</span><span>Build</span></div>
+  <div class="chapter-watermark">06</div>
+  <div class="chapter">
+    <span class="num">Chapter 06</span>
+    <h2 class="title">阶段三<br>开发</h2>
+    <div class="sub">按 PRD + 选型，一块一块来。本地能跑、你看过了，再继续下一块。</div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span>Step 6</span><span>开发 MVP</span></div>
+  <div class="top-title">第 6 步 · 开发 MVP</div>
+  <ul class="bullet-list" style="max-width:1560px;font-size:30px">
+    <li><strong>严格遵守 PRD 的 MVP 范围</strong>——只实现指定的核心功能，"不做清单"内的一律不做。动手前先列页面结构，确认后再编码。</li>
+    <li><strong>直接在项目根目录初始化</strong>，不新建 web/ 之类子目录（docs/ 和 data/ 已经在了，不冲突）。</li>
+    <li>对话与记忆采用<strong>最小方案，不引入向量检索</strong>：人设用系统提示词、短期记忆带最近若干轮、长期记忆用精简的"用户事实"键值。</li>
+    <li>大模型密钥<strong>放配置文件</strong>，告诉你填在哪、填什么名字，<strong>你自己填</strong>。模型层做成方便替换的结构。</li>
+    <li>关键决策点（模型选择、产品命名）<strong>停下来与你确认</strong>，不擅自扩展范围。</li>
+  </ul>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>Step 6 · 原文</span></div>
+  <div class="top-title">第 6 步 · 提示词原文</div>
+  <div class="prompt-box" style="position:relative;background:#1f1f1f;border-radius:16px;padding:56px 44px 36px;width:100%;max-width:1540px;height:780px;overflow-y:auto;box-sizing:border-box;text-align:left">
+<button class="copy-btn" onclick="(function(b){const p=b.parentElement.querySelector('pre');navigator.clipboard.writeText(p.textContent).then(()=>{b.textContent='✓ 已复制';b.classList.add('done');setTimeout(()=>{b.textContent='复制提示词';b.classList.remove('done')},1600)}).catch(()=>{b.textContent='复制失败'})})(this)">复制提示词</button>
+<pre class="mono" style="font-size:23px;line-height:1.7;color:#e8eaed;white-space:pre-wrap;word-break:break-word;margin:0;text-align:left">按上一步确认的技术栈和这份 PRD，开始开发 MVP。
+
+1. 严格遵守 PRD 的 MVP 范围：只实现指定的核心功能，"不做清单"内的一律不做。动手前先列出页面结构与各页面职责，确认后再编码。
+
+2. 直接在项目根目录初始化前端应用，不要新建 web/ 之类的子目录（文档和数据已经在 docs/、data/ 里，不会冲突）。初始化并安装依赖后，按页面/模块逐步实现，每完成一块保证本地可运行，并说明如何在浏览器中预览。
+
+3. 对话与记忆采用最小方案，不引入向量检索：角色人设用系统提示词定义；短期记忆带入最近若干轮对话；长期记忆用一份精简的"用户事实"键值数据，每轮拼接进上下文。
+
+4. 用到大模型的接口密钥时，单独放在一个配置文件里，别直接写进代码；告诉我该填在哪、填哪个名字，我自己来填。模型层做成方便以后替换的结构。
+
+5. 关键决策点（模型选择、产品命名等）停下来与我确认，不擅自扩展范围；遇到取舍说明利弊。</pre>
+</div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>git 节奏</span></div>
+  <div class="top-title">开发期 · git 节奏</div>
+  <div style="width:100%;max-width:1560px">
+    <div class="card" style="padding:42px 52px">
+      <div class="card-label">第一次手动开版本管理</div>
+      <div style="background:#1f1f1f;border-radius:12px;padding:24px 32px;margin-top:18px"><pre class="mono" style="font-size:24px;color:#e8eaed;margin:0">帮我初始化 git</pre></div>
+    </div>
+    <div class="card mt-l" style="padding:42px 52px;border-color:var(--text)">
+      <div class="card-label" style="color:var(--accent)">每做完一块的节奏</div>
+      <div class="body-l mt-m" style="color:var(--text)">浏览器看效果 → 没问题 → 手动发下面这句存档 → 回"继续"做下一块</div>
+      <div style="background:#1f1f1f;border-radius:12px;padding:24px 32px;margin-top:18px"><pre class="mono" style="font-size:22px;color:#e8eaed;margin:0;white-space:pre-wrap">帮我把这一块提交一下（git commit），提交信息写清这块做了什么</pre></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span>Step 7</span><span>本地验收</span></div>
+  <div class="top-title">第 7 步 · 本地运行 + 验收</div>
+  <div class="two-col" style="margin-top:8px">
+    <div class="card" style="padding:42px 48px">
+      <div class="card-label">启动</div>
+      <div class="body-l mt-m" style="color:var(--text)">让 Claude Code <strong>一步步告诉你怎么启动</strong>、在浏览器里访问哪个地址。</div>
+    </div>
+    <div class="card" style="padding:42px 48px;border-color:var(--text)">
+      <div class="card-label" style="color:var(--accent)">逐个核对</div>
+      <div class="body-l mt-m" style="color:var(--text)">对照 PRD 核对那 <strong>3 个核心功能</strong>是否都正常；哪个有问题列出来，<strong>一个一个修</strong>。</div>
+    </div>
+  </div>
+  <div class="card mt-xl" style="padding:32px 44px;background:#fdeded;border:none;max-width:1560px">
+    <div style="font-size:26px;font-weight:600;color:var(--warn)">修的时候范围不要扩散——只解决当前这个问题，不顺手加新功能。</div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>Step 7 · 原文</span></div>
+  <div class="top-title">第 7 步 · 提示词原文</div>
+  <div class="prompt-box" style="position:relative;background:#1f1f1f;border-radius:16px;padding:56px 44px 36px;width:100%;max-width:1540px;height:780px;overflow-y:auto;box-sizing:border-box;text-align:left">
+<button class="copy-btn" onclick="(function(b){const p=b.parentElement.querySelector('pre');navigator.clipboard.writeText(p.textContent).then(()=>{b.textContent='✓ 已复制';b.classList.add('done');setTimeout(()=>{b.textContent='复制提示词';b.classList.remove('done')},1600)}).catch(()=>{b.textContent='复制失败'})})(this)">复制提示词</button>
+<pre class="mono" style="font-size:23px;line-height:1.7;color:#e8eaed;white-space:pre-wrap;word-break:break-word;margin:0;text-align:left">现在把项目在本地跑起来，一步步告诉我怎么启动、在浏览器里访问哪个地址。
+
+跑起来后，我们对照 PRD 逐个核对那 3 个核心功能是否都正常：哪个没实现或有问题，你列出来，我们一个一个修。修的时候范围不要扩散，只解决当前这个问题，不顺手加新功能。</pre>
+</div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>课堂演示</span></div>
+  <div class="top-title">课堂演示 · 记忆系统三招</div>
+  <p class="body-l" style="max-width:1560px;text-align:center">套路：<strong style="color:var(--text)">先喂进关于自己的事实，隔几轮、或新开一轮，再不提这事地试探它记没记住</strong>。</p>
+  <div class="three-col mt-xl" style="max-width:1620px">
+    <div class="step-card"><div class="step-num">招式 01</div><div class="step-title" style="font-size:38px">基本事实</div><div class="step-desc">说「我叫小明，养了只猫叫橘座」，闲聊几轮后问<strong>"还记得我家那只猫吗"</strong> → 它说出"橘座"。</div></div>
+    <div class="step-card" style="border-color:var(--text)"><div class="step-num" style="color:var(--accent)">招式 02 · 最有冲击力</div><div class="step-title" style="font-size:38px">跨会话</div><div class="step-desc">说「下周三女朋友生日还没想好送什么」→ <strong>退出登录重新进</strong> → 问"我之前说的那个事" → 依然记得。</div></div>
+    <div class="step-card"><div class="step-num">招式 03</div><div class="step-title" style="font-size:38px">记忆档案页</div><div class="step-desc">连喂几条事实后切到档案页，<strong>当场展示提炼成的结构化记忆</strong>——把黑箱打开，印象最深。</div></div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="slide-header"><span>CH07 · 阶段四</span><span>Ship It</span></div>
+  <div class="chapter-watermark">07</div>
+  <div class="chapter">
+    <span class="num">Chapter 07</span>
+    <h2 class="title">阶段四<br>部署上线</h2>
+    <div class="sub">推 GitHub → Vercel 部署 → 写 README。让别人能通过网址打开。</div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span>Step 8</span><span>推 GitHub</span></div>
+  <div class="top-title">第 8 步 · 推送到 GitHub</div>
+  <div class="card" style="padding:34px 44px;background:var(--bg-soft);border:none;max-width:1560px">
+    <div class="body-l" style="color:var(--text)"><strong>Vercel 从你的 GitHub 仓库拉代码部署</strong>，所以本地改完必须先 push 上去。</div>
+  </div>
+  <ul class="bullet-list mt-xl" style="max-width:1560px;font-size:30px">
+    <li>先检查还有没有<strong>没提交的改动</strong>，有的话先 git commit。</li>
+    <li>确认本地已经连好了 GitHub 远程仓库；如果还没连，告诉你需要做什么。</li>
+    <li>把代码 push 到 GitHub，推完<strong>给你仓库地址</strong>，让你去确认最新代码已上去。</li>
+  </ul>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>Step 8 · 原文</span></div>
+  <div class="top-title">第 8 步 · 提示词原文</div>
+  <div class="prompt-box" style="position:relative;background:#1f1f1f;border-radius:16px;padding:56px 44px 36px;width:100%;max-width:1540px;height:780px;overflow-y:auto;box-sizing:border-box;text-align:left">
+<button class="copy-btn" onclick="(function(b){const p=b.parentElement.querySelector('pre');navigator.clipboard.writeText(p.textContent).then(()=>{b.textContent='✓ 已复制';b.classList.add('done');setTimeout(()=>{b.textContent='复制提示词';b.classList.remove('done')},1600)}).catch(()=>{b.textContent='复制失败'})})(this)">复制提示词</button>
+<pre class="mono" style="font-size:23px;line-height:1.7;color:#e8eaed;white-space:pre-wrap;word-break:break-word;margin:0;text-align:left">现在帮我把目前的代码推送到 GitHub。
+
+1. 先检查一下还有没有没提交的改动，有的话先 git commit 一下，提交信息写清这次改了什么。
+2. 确认本地已经连好了我的 GitHub 远程仓库；如果还没连，告诉我需要我做什么。
+3. 把代码 push 到 GitHub，推完告诉我仓库地址，让我去 GitHub 上确认最新代码已经上去了。</pre>
+</div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span>Step 9</span><span>部署 Vercel</span></div>
+  <div class="top-title">第 9 步 · 部署到 Vercel</div>
+  <ul class="bullet-list" style="max-width:1560px;font-size:30px">
+    <li><strong>联网查最新部署做法</strong>——配置、命令、环境变量经常变，别凭旧记忆。</li>
+    <li>先告诉你<strong>整体分几步、每步在干嘛</strong>（走"连接 GitHub 仓库"的方式）。</li>
+    <li>需要你亲自操作的地方（导入仓库、把密钥填进环境变量、点确认），<strong>停下来告诉你怎么点、填什么</strong>。</li>
+    <li>用大白话解释每一步；遇到报错<strong>先看清原因再动手</strong>，别盲目重试。</li>
+    <li>部署成功后给你线上网址，并提醒<strong>上线后要重新检查哪些东西</strong>。</li>
+  </ul>
+  <div class="card mt-xl" style="padding:24px 36px;background:var(--bg-soft);border:none;max-width:1560px">
+    <div class="body-m" style="color:var(--text)">以后再改了代码，只要 push 到 GitHub，Vercel <strong>自动重新部署</strong>。</div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>Step 9 · 原文</span></div>
+  <div class="top-title">第 9 步 · 提示词原文</div>
+  <div class="prompt-box" style="position:relative;background:#1f1f1f;border-radius:16px;padding:56px 44px 36px;width:100%;max-width:1540px;height:780px;overflow-y:auto;box-sizing:border-box;text-align:left">
+<button class="copy-btn" onclick="(function(b){const p=b.parentElement.querySelector('pre');navigator.clipboard.writeText(p.textContent).then(()=>{b.textContent='✓ 已复制';b.classList.add('done');setTimeout(()=>{b.textContent='复制提示词';b.classList.remove('done')},1600)}).catch(()=>{b.textContent='复制失败'})})(this)">复制提示词</button>
+<pre class="mono" style="font-size:23px;line-height:1.7;color:#e8eaed;white-space:pre-wrap;word-break:break-word;margin:0;text-align:left">代码已经推送到 GitHub 了，现在把这个 MVP 部署到 Vercel，让别人能通过网址访问。
+
+请先联网查 Vercel 当前最新的部署做法（配置、命令、环境变量设置经常变，别只凭旧记忆），然后一步步带我做：
+1. 先告诉我整体要分几步、每步在干嘛（我们走"连接 GitHub 仓库"的方式）。
+2. 需要我亲自操作的地方（比如登录 Vercel、导入 GitHub 仓库、把接口密钥填到 Vercel 的环境变量里、点确认），停下来告诉我具体怎么点、填什么，等我做完再继续。
+3. 用大白话解释每一步；遇到报错先看清原因再动手，别盲目重试。
+4. 部署成功后，把线上访问网址给我，并提醒我上线后要重新检查哪些东西（比如密钥有没有配对、功能在线上是否正常）。</pre>
+</div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span>Step 9 · 部署后</span><span>MVP 功能回顾</span></div>
+  <div class="top-title">第 9 步 · 部署后 · MVP 功能回顾</div>
+  <p class="body-l" style="max-width:1560px;text-align:center;color:var(--text-secondary);margin-bottom:18px">部署完别急着收工——让 Claude Code 对照 PRD <strong>把已实现的功能盘一遍</strong>，看看有没有越界、有没有漏掉、有没有粗糙到该返工的。</p>
+  <div class="prompt-box" style="position:relative;background:#1f1f1f;border-radius:16px;padding:56px 44px 36px;width:100%;max-width:1540px;height:580px;overflow-y:auto;box-sizing:border-box;text-align:left">
+<button class="copy-btn" onclick="(function(b){const p=b.parentElement.querySelector('pre');navigator.clipboard.writeText(p.textContent).then(()=>{b.textContent='✓ 已复制';b.classList.add('done');setTimeout(()=>{b.textContent='复制提示词';b.classList.remove('done')},1600)}).catch(()=>{b.textContent='复制失败'})})(this)">复制提示词</button>
+<pre class="mono" style="font-size:23px;line-height:1.7;color:#e8eaed;white-space:pre-wrap;word-break:break-word;margin:0;text-align:left">帮我回顾一下当前 MVP 实际做了哪些功能。请你读一下 docs/ 里的 PRD 和现在的代码，给我：
+1. 已经实现的功能清单（按页面 / 模块列）；
+2. 对照 PRD 的 MVP 范围：3 个核心功能是不是都做了、有没有漏掉的 P0；
+3. 有没有不小心做了"不做清单"里的东西（范围有没有越界）；
+4. 哪些做了但还比较粗糙、需要后续打磨。
+用大白话讲，别夸大，没做的就说没做。</pre>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span>附录 A</span><span>README</span></div>
+  <div class="top-title">附录 A · 写产品说明文档（README）</div>
+  <p class="body-l" style="max-width:1560px;text-align:center">既是项目的<strong style="color:var(--text)">门面</strong>，也是放进作品集时别人了解它的入口。</p>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;width:100%;max-width:1620px;margin-top:32px">
+    <div class="step-card" style="padding:24px 22px"><div class="step-num">01</div><div style="font-size:22px;font-weight:700;margin-top:8px">产品名 + 一句话介绍</div></div>
+    <div class="step-card" style="padding:24px 22px"><div class="step-num">02</div><div style="font-size:22px;font-weight:700;margin-top:8px">背景痛点</div></div>
+    <div class="step-card" style="padding:24px 22px"><div class="step-num">03</div><div style="font-size:22px;font-weight:700;margin-top:8px">核心功能</div></div>
+    <div class="step-card" style="padding:24px 22px"><div class="step-num">04</div><div style="font-size:22px;font-weight:700;margin-top:8px">在线体验</div></div>
+    <div class="step-card" style="padding:24px 22px"><div class="step-num">05</div><div style="font-size:22px;font-weight:700;margin-top:8px">技术栈</div></div>
+    <div class="step-card" style="padding:24px 22px"><div class="step-num">06</div><div style="font-size:22px;font-weight:700;margin-top:8px">本地运行</div></div>
+    <div class="step-card" style="padding:24px 22px"><div class="step-num">07</div><div style="font-size:22px;font-weight:700;margin-top:8px">目录结构</div></div>
+    <div class="step-card" style="padding:24px 22px;border-color:var(--text)"><div class="step-num" style="color:var(--accent)">08</div><div style="font-size:22px;font-weight:700;margin-top:8px">后续规划（P1/P2）</div></div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>附录 A · 原文</span></div>
+  <div class="top-title">附录 A · README 提示词原文</div>
+  <div class="prompt-box" style="position:relative;background:#1f1f1f;border-radius:16px;padding:56px 44px 36px;width:100%;max-width:1540px;height:780px;overflow-y:auto;box-sizing:border-box;text-align:left">
+<button class="copy-btn" onclick="(function(b){const p=b.parentElement.querySelector('pre');navigator.clipboard.writeText(p.textContent).then(()=>{b.textContent='✓ 已复制';b.classList.add('done');setTimeout(()=>{b.textContent='复制提示词';b.classList.remove('done')},1600)}).catch(()=>{b.textContent='复制失败'})})(this)">复制提示词</button>
+<pre class="mono" style="font-size:23px;line-height:1.7;color:#e8eaed;white-space:pre-wrap;word-break:break-word;margin:0;text-align:left">最后一步，帮我写一份产品说明文档，作为这个项目的门面（也方便放进作品集）。
+
+请先读一下 docs/ 里的 MRD、BRD、PRD 和现在的代码，基于真实内容写、不要编。文档放在项目根目录、命名 README.md（这样 GitHub 打开仓库会自动展示），用中文写，包含：
+1. 产品名 + 一句话介绍：它是什么、给谁用、解决什么问题。
+2. 背景：简单说说它解决的核心痛点（从 MRD/BRD 的结论里提炼，两三句就够）。
+3. 核心功能：列出当前 MVP 实际做了的几个功能，每个一句话。
+4. 在线体验：放上线地址（Vercel 那个网址）；如果有截图，先留好位置。
+5. 技术栈：前端、样式、数据库、大模型、部署平台分别用了什么。
+6. 本地运行：一步步写清楚别人怎么在自己电脑上把它跑起来——装依赖、配哪个密钥（只写名字、不写真实值）、用什么命令启动、访问哪个地址。
+7. 目录结构：简单说明 docs/ 放什么、data/ 放什么、代码在哪。
+8. 后续规划：把 PRD 里的 P1/P2 挑几条，作为"下一步想做的"列出来。
+
+写完告诉我生成在哪，让我看一眼，有要改的地方我们再调。</pre>
+</div>
+</section>
+
+<section class="slide">
+  <div class="slide-header"><span>CH08 · 课后扩展</span><span>Beyond MVP</span></div>
+  <div class="chapter-watermark">08</div>
+  <div class="chapter">
+    <span class="num">Chapter 08</span>
+    <h2 class="title">课后扩展<br>第 11-12 步</h2>
+    <div class="sub">MVP 已就绪，继续按 PRD 优化 + 给产品做一个官网。</div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span>Step 10</span><span>课后练习</span></div>
+  <div class="top-title">第 10 步 · 自选优化（PRD 的 P1/P2）</div>
+  <div class="card" style="padding:36px 48px;background:var(--bg-soft);border:none;max-width:1560px">
+    <div class="body-l" style="color:var(--text)"><strong>首选：回到自己那份 PRD。</strong>当初标的 P1/P2 就是<strong>现成的优化清单</strong>——MVP 只做了 P0，P1/P2 正是下一步该做的事。</div>
+  </div>
+  <div class="three-col mt-xl" style="max-width:1620px">
+    <div class="step-card"><div class="step-num">01 · 列出</div><div class="step-desc" style="font-size:24px;margin-top:14px">打开 docs/ 里的 PRD，把 P1、P2 需求<strong>逐条抄出来</strong>。</div></div>
+    <div class="step-card" style="border-color:var(--text)"><div class="step-num" style="color:var(--accent)">02 · 挑一个</div><div class="step-desc" style="font-size:24px;margin-top:14px">挑 <strong>1 个</strong>最想做的，想清楚"解决哪个痛点、怎么验证做对了"，再让 Claude Code 实现。</div></div>
+    <div class="step-card"><div class="step-num">03 · 上线</div><div class="step-desc" style="font-size:24px;margin-top:14px"><strong>一次只做一个</strong>，做完 push 上线，别一口气堆一堆。</div></div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>Step 10 · 原文</span></div>
+  <div class="top-title">第 10 步 · 提示词原文</div>
+  <div class="prompt-box" style="position:relative;background:#1f1f1f;border-radius:16px;padding:56px 44px 36px;width:100%;max-width:1540px;height:780px;overflow-y:auto;box-sizing:border-box;text-align:left">
+<button class="copy-btn" onclick="(function(b){const p=b.parentElement.querySelector('pre');navigator.clipboard.writeText(p.textContent).then(()=>{b.textContent='✓ 已复制';b.classList.add('done');setTimeout(()=>{b.textContent='复制提示词';b.classList.remove('done')},1600)}).catch(()=>{b.textContent='复制失败'})})(this)">复制提示词</button>
+<pre class="mono" style="font-size:23px;line-height:1.7;color:#e8eaed;white-space:pre-wrap;word-break:break-word;margin:0;text-align:left">继续按 PRD 往下开发。请先读一下 docs/ 里的 PRD 和现在的代码，看看已经做了哪些、还差哪些，然后告诉我接下来按 PRD 适合做哪一项（优先 P1）。先把你的计划和要改动的地方列给我确认，我点头后再动手；只做这一项，不要顺手改别的或加 PRD 里没写的东西。做完保证本地能跑、告诉我怎么看效果，我验收没问题后帮我 commit。</pre>
+</div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>通用优化方向</span></div>
+  <div class="top-title">PRD 没覆盖时的兜底参考</div>
+  <div style="width:100%;max-width:1700px">
+    <table style="width:100%;border-collapse:collapse;font-size:22px">
+      <thead><tr style="border-bottom:2px solid var(--text)"><th style="text-align:left;padding:18px 16px;font-family:'JetBrains Mono',monospace;font-size:16px;letter-spacing:2px;color:var(--text-meta);text-transform:uppercase">方向</th><th style="text-align:left;padding:18px 16px;font-family:'JetBrains Mono',monospace;font-size:16px;letter-spacing:2px;color:var(--text-meta);text-transform:uppercase">具体可做的</th><th style="text-align:left;padding:18px 16px;font-family:'JetBrains Mono',monospace;font-size:16px;letter-spacing:2px;color:var(--text-meta);text-transform:uppercase">难度</th></tr></thead>
+      <tbody>
+        <tr style="border-bottom:1px solid var(--border)"><td style="padding:16px;font-weight:600;color:var(--text)">体验打磨</td><td style="padding:16px;color:var(--text-secondary)">空状态/加载/报错、手机端排版、消息发送中状态、回车发送</td><td style="padding:16px"><span class="tag" style="font-size:18px;padding:6px 14px">低</span></td></tr>
+        <tr style="border-bottom:1px solid var(--border)"><td style="padding:16px;font-weight:600;color:var(--text)">多会话</td><td style="padding:16px;color:var(--text-secondary)">新建/列表/切换/重命名/删除会话</td><td style="padding:16px"><span class="tag" style="font-size:18px;padding:6px 14px">中</span></td></tr>
+        <tr style="border-bottom:1px solid var(--border)"><td style="padding:16px;font-weight:600;color:var(--text)">记忆增强</td><td style="padding:16px;color:var(--text-secondary)">档案页手动编辑/删除、记忆分类、"这条记忆从哪句话来的"</td><td style="padding:16px"><span class="tag" style="font-size:18px;padding:6px 14px">中</span></td></tr>
+        <tr style="border-bottom:1px solid var(--border)"><td style="padding:16px;font-weight:600;color:var(--text)">角色玩法</td><td style="padding:16px;color:var(--text-secondary)">多角色可选、自定义人设、角色头像</td><td style="padding:16px"><span class="tag" style="font-size:18px;padding:6px 14px">中</span></td></tr>
+        <tr style="border-bottom:1px solid var(--border)"><td style="padding:16px;font-weight:600;color:var(--text)">留存 / 增长</td><td style="padding:16px;color:var(--text-secondary)">每日问候、消息提醒、分享 / 邀请入口</td><td style="padding:16px"><span class="tag" style="font-size:18px;padding:6px 14px">中</span></td></tr>
+        <tr style="border-bottom:1px solid var(--border)"><td style="padding:16px;font-weight:600;color:var(--text)">商业化验证</td><td style="padding:16px;color:var(--text-secondary)">免费额度 + 付费解锁最小闭环（对应 BRD 的付费假设）</td><td style="padding:16px"><span class="tag accent" style="font-size:18px;padding:6px 14px">中高</span></td></tr>
+        <tr style="border-bottom:1px solid var(--border)"><td style="padding:16px;font-weight:600;color:var(--text)">数据 / 反馈</td><td style="padding:16px;color:var(--text-secondary)">基础使用数据（来了多少人、聊了几轮）+ 反馈入口</td><td style="padding:16px"><span class="tag" style="font-size:18px;padding:6px 14px">中</span></td></tr>
+        <tr><td style="padding:16px;font-weight:600;color:var(--text)">工程化</td><td style="padding:16px;color:var(--text-secondary)">自动化测试、错误监控、密钥配置更规范</td><td style="padding:16px"><span class="tag accent" style="font-size:18px;padding:6px 14px">高</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span>附录 B</span><span>做个官网</span></div>
+  <div class="top-title">附录 B · 给产品做一个官网（落地页）</div>
+  <div class="card" style="padding:36px 48px;border-color:var(--text);max-width:1560px">
+    <div class="card-label" style="color:var(--accent)">核心要求</div>
+    <div class="body-l mt-m" style="color:var(--text)"><strong>官网的视觉风格必须和产品本身保持一致</strong>，否则两边像两个不相干的产品。</div>
+  </div>
+  <div class="two-col mt-l">
+    <div class="card" style="padding:34px 40px;background:#fdeded;border:none">
+      <div class="card-label" style="color:var(--warn)">✕ 不建议</div>
+      <div class="body-m mt-m" style="color:var(--text)">直接套用现成整站模板——多数是<strong>干净商务 SaaS 风</strong>，与情感化、柔和渐变调性不匹配。</div>
+    </div>
+    <div class="card" style="padding:34px 40px;border-color:var(--text)">
+      <div class="card-label" style="color:var(--accent)">✓ 推荐做法</div>
+      <div class="body-m mt-m" style="color:var(--text)"><strong>复用产品自身的设计语言</strong>（配色、渐变、磨砂玻璃、按钮）+ 从开源组件库挑气质相符的<strong>动效组件</strong>拼接。</div>
+    </div>
+  </div>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>开源组件库对照</span></div>
+  <div class="top-title">三个可参考的开源组件库</div>
+  <div class="three-col" style="max-width:1700px">
+    <div class="step-card">
+      <div class="step-num">~28k ★</div>
+      <div class="step-title" style="font-size:38px">Aceternity UI</div>
+      <div class="step-desc" style="margin-top:14px">
+        <code style="background:var(--bg-soft);padding:2px 8px;border-radius:4px;font-size:18px">ui.aceternity.com</code><br>
+        <span style="display:block;margin-top:12px"><strong>Aurora 极光背景</strong>、渐变流动背景、Spotlight，适合情感化产品 Hero。</span>
+      </div>
+    </div>
+    <div class="step-card" style="border-color:var(--text)">
+      <div class="step-num" style="color:var(--accent)">~20k ★</div>
+      <div class="step-title" style="font-size:38px">Magic UI</div>
+      <div class="step-desc" style="margin-top:14px">
+        <code style="background:var(--bg-soft);padding:2px 8px;border-radius:4px;font-size:18px">magicui.design</code><br>
+        <span style="display:block;margin-top:12px">精致<strong>微交互</strong>、渐变文字，浅色模式下也好看。</span>
+      </div>
+    </div>
+    <div class="step-card">
+      <div class="step-num">~37k ★</div>
+      <div class="step-title" style="font-size:38px">react-bits</div>
+      <div class="step-desc" style="margin-top:14px">
+        <code style="background:var(--bg-soft);padding:2px 8px;border-radius:4px;font-size:18px">github.com/DavidHDev/react-bits</code><br>
+        <span style="display:block;margin-top:12px"><strong>文字动效</strong>（模糊淡入、渐变文字）与 Aurora 背景见长。</span>
+      </div>
+    </div>
+  </div>
+  <p class="body-m mt-xl" style="color:var(--text-meta);text-align:center;max-width:1560px">三者均为<strong>复制即用、代码归自己所有</strong>，与 Next.js + Tailwind 兼容。</p>
+</section>
+
+<section class="slide center">
+  <div class="slide-header"><span></span><span>附录 B · 原文</span></div>
+  <div class="top-title">附录 B · 官网提示词原文</div>
+  <div class="prompt-box" style="position:relative;background:#1f1f1f;border-radius:16px;padding:56px 44px 36px;width:100%;max-width:1540px;height:780px;overflow-y:auto;box-sizing:border-box;text-align:left">
+<button class="copy-btn" onclick="(function(b){const p=b.parentElement.querySelector('pre');navigator.clipboard.writeText(p.textContent).then(()=>{b.textContent='✓ 已复制';b.classList.add('done');setTimeout(()=>{b.textContent='复制提示词';b.classList.remove('done')},1600)}).catch(()=>{b.textContent='复制失败'})})(this)">复制提示词</button>
+<pre class="mono" style="font-size:23px;line-height:1.7;color:#e8eaed;white-space:pre-wrap;word-break:break-word;margin:0;text-align:left">我要给这个产品做一个官网（落地页），视觉风格要和现有产品保持一致。
+
+第一步，先别动手做页面。请你先读一遍现在产品的样式和组件（globals.css、tailwind 配置、components 里的卡片/按钮/背景渐变），把这个产品的设计语言总结给我：主色和渐变、字体、圆角、磨砂玻璃卡片、胶囊按钮、整体气质（柔和、情感化）。总结完等我确认。
+
+第二步（我确认后再做），用这套设计语言做一个官网落地页，包含：顶部导航 + Hero（一句话 slogan + "进入产品"按钮）+ 核心功能介绍（用 PRD 里那几个功能）+ 一段情感化文案 + 底部 footer。要求：
+- 复用产品现有的颜色、渐变、磨砂玻璃质感和按钮样式，让官网和产品保持一致；
+- 背景用柔和的渐变/极光那种流动效果，呼应产品里的渐变；
+- 桌面端和手机端都要好看（响应式）；
+- 落地页做成项目里的一个新路由，先告诉我你打算挂在哪个地址（比如把 / 设成官网、产品挪到 /chat），改路由前一定先跟我确认。
+
+第三步，如果想用现成动效（极光背景、渐变标题、文字淡入），可以从 Magic UI（magicui.design）或 Aceternity UI（ui.aceternity.com）复制对应组件进来，再按我们的配色改。用了哪个、改了什么告诉我。
+
+做完让我在浏览器里看效果，我们再一起微调。</pre>
+</div>
+</section>
+
+<section class="slide">
+  <div class="slide-header"><span>End of Session</span><span>See You Next Time</span></div>
+  <h2 class="display h-m" style="max-width:1500px">
+    你现在有一个能<br>交给真实用户试的 <span class="hl">MVP</span>
+  </h2>
+  <p class="body-xl mt-xl" style="max-width:1500px">
+    线上能打开、核心功能能用，就达到了 MVP 的门槛。<br>
+    下一步：<strong>打磨可用性 → 加反馈入口 → 用真实反馈回头验证 BRD 的关键假设</strong>。
+  </p>
+  <p style="position:absolute;bottom:110px;left:290px;font-size:22px;letter-spacing:2px;color:var(--text-secondary);font-weight:500">AI 产品 0 → 1 · Claude Code 操作指南 · 完</p>
+</section>
+
+<!-- ⬆️ slide 结束 ⬆️ -->
+
+<!-- 修订 al：controls 移进 stage，position:absolute 跟随 stage scale -->
+<div class="controls">
+  <button id="prev">‹</button>
+  <div class="counter"><span id="current">1</span> / <span id="total">1</span></div>
+  <button id="next">›</button>
+</div>
+
+</div>
+
+<script>
+// 舞台等比缩放
+function scaleStage() {
+  const stage = document.getElementById('stage');
+  const scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+  stage.style.setProperty('--scale', scale);
+}
+window.addEventListener('resize', scaleStage);
+scaleStage();
+
+const slides = document.querySelectorAll('.slide');
+const tocItems = document.querySelectorAll('.toc-item');
+const total = slides.length;
+let current = 0;
+document.getElementById('total').textContent = total;
+
+// 交互动画 iframe：切到该页才开始播放（修订 aa）——
+// 初始化时把 src 收进 data-src，进页装载（动画从头播）、离页卸载（归零 + 省资源）
+slides.forEach((s) => s.querySelectorAll('iframe[src]').forEach((f) => {
+  f.dataset.src = f.getAttribute('src');
+  f.removeAttribute('src');
+}));
+function syncFrames() {
+  slides.forEach((s, i) => s.querySelectorAll('iframe[data-src]').forEach((f) => {
+    if (i === current) { if (!f.getAttribute('src')) f.setAttribute('src', f.dataset.src); }
+    else if (f.getAttribute('src')) f.removeAttribute('src');
+  }));
+}
+
+function show(idx) {
+  const prev = current;
+  current = Math.max(0, Math.min(total - 1, idx));
+  // 方向感知水平推移
+  const dir = current >= prev ? 1 : -1;
+  slides[prev].style.setProperty('--dx', (-dir * 24) + 'px');
+  slides[current].style.setProperty('--dx', (dir * 24) + 'px');
+  void slides[current].offsetWidth;
+  slides.forEach((s, i) => s.classList.toggle('active', i === current));
+  syncFrames();
+  // 目录树高亮：当前页若无独立条目，归属的上一条目常亮（修订 w）
+  let best = -1;
+  tocItems.forEach((a) => { const v = +a.dataset.idx; if (v <= current && v > best) best = v; });
+  tocItems.forEach((a) => a.classList.toggle('active', +a.dataset.idx === best));
+  // 修订 aj/ak：目录条目总高度超过侧栏 (typical 1480px > 952px) 时，必须把 active 滚到可见区。
+  // 但绝不能用 scrollIntoView——即使 .stage 是 overflow:hidden，scrollIntoView 仍会逐层向祖先
+  // 冒泡设置 scrollTop（hidden 只裁切视觉、不阻止编程式滚动），结果把整个舞台连同左上 logo / 右
+  // 上读数一起推上去 ~100px。改成 toc.scrollTo——只影响 toc 自己，不冒泡。
+  const activeEl = document.querySelector('.toc-item.active');
+  const tocEl = document.querySelector('.toc');
+  if (activeEl && tocEl) {
+    const target = activeEl.offsetTop - tocEl.clientHeight / 2 + activeEl.clientHeight / 2;
+    tocEl.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+  }
+  document.getElementById('current').textContent = current + 1;
+  document.getElementById('progress').style.width = ((current + 1) / total * 100) + '%';
+  document.getElementById('theta').textContent = ((current * 37 % 90) / 10 - 4.5).toFixed(1);
+}
+
+document.getElementById('next').addEventListener('click', (e) => { e.stopPropagation(); e.currentTarget.blur(); show(current + 1); });
+document.getElementById('prev').addEventListener('click', (e) => { e.stopPropagation(); e.currentTarget.blur(); show(current - 1); });
+// 目录树点击跳页
+tocItems.forEach((a) => a.addEventListener('click', () => show(+a.dataset.idx)));
+
+// iframe 键盘导航转发（修订 ab）：动画/交互页内按 ←/→ 时由 iframe postMessage 上报翻页。
+// 取代旧的 blur 抢焦点方案——抢焦点会打断 iframe 内的文本输入（交互工具页有输入框）。
+window.addEventListener('message', (e) => {
+  const k = e.data && e.data.deckNav;
+  if (k === 'ArrowRight' || k === 'PageDown') show(current + 1);
+  else if (k === 'ArrowLeft' || k === 'PageUp') show(current - 1);
+});
+
+document.addEventListener('keydown', (e) => {
+  // 修订 al：input/textarea/contenteditable 聚焦时不响应翻页键——否则在交互页输入框
+  // 里按 ←/→ 会翻页而不是移动光标（MDN a11y 标准做法 document.activeElement 检测）
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); show(current + 1); }
+  else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); show(current - 1); }
+  else if (e.key === 'Home') show(0);
+  else if (e.key === 'End') show(total - 1);
+});
+
+show(0);
+
+// ===== 右下实时读数：鼠标坐标 + fps =====
+const mxEl = document.getElementById('mx'), myEl = document.getElementById('my');
+document.addEventListener('mousemove', (e) => {
+  const r = document.getElementById('stage').getBoundingClientRect();
+  const sc = r.width / 1920;
+  const x = Math.max(0, Math.min(1920, Math.round((e.clientX - r.left) / sc)));
+  const y = Math.max(0, Math.min(1080, Math.round((e.clientY - r.top) / sc)));
+  mxEl.textContent = String(x).padStart(4, '0');
+  myEl.textContent = String(y).padStart(4, '0');
+});
+const fpsEl = document.getElementById('fps');
+let fpsLast = performance.now(), fpsFrames = 0;
+(function fpsLoop(now) {
+  requestAnimationFrame(fpsLoop);
+  fpsFrames++;
+  if (now - fpsLast >= 500) {
+    fpsEl.textContent = Math.round(fpsFrames * 1000 / (now - fpsLast));
+    fpsFrames = 0; fpsLast = now;
+  }
+})(performance.now());
+
+// ===== 章节页裁切标记 =====
+slides.forEach((slide) => {
+  const ch = slide.querySelector('.chapter');
+  if (!ch) return;
+  const crop = document.createElement('div');
+  crop.className = 'crop';
+  crop.innerHTML = '<i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i>';
+  ch.appendChild(crop);
+});
+
+// ===== 封面副标题打字机（循环：打完停顿 → 回删 → 重打） =====
+(function typer() {
+  const el = slides[0] && slides[0].querySelector('.body-xl');
+  if (!el) return;
+  const txt = el.textContent.trim();
+  el.textContent = '';
+  const tn = document.createTextNode('');
+  const cur = document.createElement('span');
+  cur.className = 'cursor';
+  el.append(tn, cur);
+  let i = 0, mode = 'type';
+  function tick() {
+    if (mode === 'type') {
+      tn.textContent = txt.slice(0, ++i);
+      if (i >= txt.length) { mode = 'erase'; setTimeout(tick, 2600); return; }
+      setTimeout(tick, 65);
+    } else {
+      tn.textContent = txt.slice(0, --i);
+      if (i <= 0) { mode = 'type'; setTimeout(tick, 900); return; }
+      setTimeout(tick, 28);
+    }
+  }
+  setTimeout(tick, 400);
+})();
+
+// ===== 步骤渐显交互（十步流水线页）=====
+// 在 keydown 捕获阶段拦截 →/← —— 当前活动页是含 [data-step-reveal] 的页时：
+// 没全部点亮前，→ 点亮下一个、← 收回上一个；全部点亮后再按 → 才走骨架翻页。
+// useCapture:true 让本 handler 先于骨架的 keydown 跑，stopImmediatePropagation 阻止骨架 handler。
+(function stepReveal() {
+  document.addEventListener('keydown', (e) => {
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    const active = document.querySelector('.slide.active');
+    if (!active) return;
+    const container = active.querySelector('[data-step-reveal]');
+    if (!container) return;
+    const steps = container.querySelectorAll('.reveal-step');
+    const finals = container.querySelectorAll('.reveal-final');
+    const counter = container.querySelector('.reveal-counter');
+    const hint = container.querySelector('.reveal-hint');
+    const shown = container.querySelectorAll('.reveal-step.shown').length;
+    const total = steps.length;
+    const updateCounter = (n) => {
+      if (counter) counter.textContent = n;
+      if (hint) hint.classList.toggle('done', n >= total);
+    };
+
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') {
+      if (shown < total) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        steps[shown].classList.add('shown');
+        // 最后一格点亮的同时把页脚副标题也淡入
+        if (shown + 1 >= total) finals.forEach((f) => f.classList.add('shown'));
+        updateCounter(shown + 1);
+      }
+      // 全部点亮后不拦截，骨架接管 → 翻下一页
+    } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+      if (shown > 0) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        steps[shown - 1].classList.remove('shown');
+        finals.forEach((f) => f.classList.remove('shown'));
+        updateCounter(shown - 1);
+      }
+      // 全部收回后不拦截，骨架接管 ← 翻回前一页
+    }
+  }, true);
+
+  // 离开本页或重新进入时重置（监听 active 类变化）
+  const observer = new MutationObserver(() => {
+    document.querySelectorAll('[data-step-reveal]').forEach((c) => {
+      // 只重置「非当前活动页」的渐显容器
+      if (!c.closest('.slide.active')) {
+        c.querySelectorAll('.reveal-step.shown').forEach((s) => s.classList.remove('shown'));
+        c.querySelectorAll('.reveal-final.shown').forEach((s) => s.classList.remove('shown'));
+        const counter = c.querySelector('.reveal-counter');
+        if (counter) counter.textContent = '0';
+        const hint = c.querySelector('.reveal-hint');
+        if (hint) hint.classList.remove('done');
+      }
+    });
+  });
+  document.querySelectorAll('.slide').forEach((s) => observer.observe(s, { attributes: true, attributeFilter: ['class'] }));
+})();
+</script>
+
+</body>
+</html>
